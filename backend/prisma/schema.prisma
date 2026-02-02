@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  FARMER
+  BUYER
+  TRANSPORTER
+  ADMIN
+}
+
+enum Language {
+  ENGLISH
+  HINDI
+  TELUGU
+  TAMIL
+  KANNADA
+}
+
+model User {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  name      String
+  role      Role     @default(BUYER)
+  language  Language @default(ENGLISH)
+  email     String?  @unique
+  gender    String?
+  bio       String?
+  location  Json?    // { village, district, state }
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listings      Listing[]
+  chatsAsFarmer NegotiatingChat[] @relation("FarmerChats")
+  chatsAsBuyer  NegotiatingChat[] @relation("BuyerChats")
+  deliveries    Delivery[]
+  messages      Message[]
+}
+
+model Crop {
+  id       String    @id @default(uuid())
+  name     String
+  category String
+  icon     String
+  listings Listing[]
+}
+
+model Listing {
+  id            String   @id @default(uuid())
+  farmerId      String
+  farmer        User     @relation(fields: [farmerId], references: [id])
+  cropId        String
+  crop          Crop     @relation(fields: [cropId], references: [id])
+  quantity      Float
+  unit          String   @default("kg")
+  expectedPrice Float
+  mandiPrice    Float?
+  msp           Float?
+  grade         String
+  harvestDate   DateTime
+  images        String[]
+  status        String   @default("AVAILABLE")
+  location      String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  chats NegotiatingChat[]
+}
+
+model NegotiatingChat {
+  id           String   @id @default(uuid())
+  listingId    String
+  listing      Listing  @relation(fields: [listingId], references: [id])
+  buyerId      String
+  buyer        User     @relation("BuyerChats", fields: [buyerId], references: [id])
+  farmerId     String
+  farmer       User     @relation("FarmerChats", fields: [farmerId], references: [id])
+  currentOffer Float
+  status       String   @default("OPEN")
+  lastMessage  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  messages Message[]
+}
+
+model Message {
+  id         String          @id @default(uuid())
+  chatId     String
+  chat       NegotiatingChat @relation(fields: [chatId], references: [id])
+  senderId   String
+  sender     User            @relation(fields: [senderId], references: [id])
+  text       String
+  type       String          @default("TEXT")
+  offerValue Float?
+  timestamp  DateTime        @default(now())
+}
+
+model Delivery {
+  id            String  @id @default(uuid())
+  orderId       String  @unique
+  transporterId String?
+  transporter   User?   @relation(fields: [transporterId], references: [id])
+  status        String  @default("PENDING")
+  cost          Float
+  distance      Float
+  trackingData  Json?   // Live coordinates
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model MarketPrice {
+  id     String   @id @default(uuid())
+  cropId String
+  mandi  String
+  min    Float
+  max    Float
+  avg    Float
+  date   DateTime @default(now())
+}
