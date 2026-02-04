@@ -1,20 +1,138 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+
+# KisanSetu 🌾
+### AI-powered farmer marketplace with real-time negotiation & delivery management
+
 </div>
 
-# Run and deploy your AI Studio app
+## Overview
+**KisanSetu** is a farmer-first marketplace where farmers can publish crop listings, buyers can purchase crops, and transporters can accept delivery deals. The system supports role-based dashboards, real-time delivery updates via WebSockets, and AI-assisted crop quality grading from images.
 
-This contains everything you need to run your app locally.
+---
 
-View your app in AI Studio: https://ai.studio/apps/drive/19mBZ0Mx4YiGuKQj1ISgF8RYmMvt2MUEh
+## Key Features
 
-## Run Locally
+### Farmer
+- Create unlimited crop listings (stored in DB)
+- Upload harvest photos and get **AI-decided quality grade** (not editable)
+- Add **harvest date** before publishing
+- View orders and **arrange delivery** when buyer selects *Farmer Arranged*
+- Share **Pickup OTP** with transporter for pickup verification
 
-**Prerequisites:**  Node.js
+### Buyer
+- Browse all available listings with farmer details
+- Add items to cart, place orders, cart clears automatically after checkout
+- Track delivery timeline and share **Delivery OTP** with transporter at delivery
+- View order history
+
+### Transporter
+- View available delivery deals with crop + route + earnings
+- Accept or decline deals
+- Verify **Pickup OTP** (from farmer) → status becomes **PICKED_UP**
+- Verify **Delivery OTP** (from buyer) → delivery becomes **COMPLETED**
+
+### Real-time
+- WebSocket events for delivery creation/accept/otp/status updates
+
+---
+
+## Tech Stack
+**Frontend**
+- React + TypeScript
+- Vite
+- TailwindCSS
+- socket.io-client
+
+**Backend**
+- Node.js + Express
+- Prisma (MongoDB)
+- JWT Authentication
+- socket.io
+
+---
+
+## Project Structure
 
 
-1. Install dependencies:
-   `npm install`
-2. Set `VITE_GEMINI_API_KEY` in `.env.local` (or copy from `.env.example`) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+---
+
+## Setup (Local Development)
+
+### 1) Clone
+```bash
+git clone https://github.com/codewithManikanta/KisanSetu.git
+cd KisanSetu
+```
+
+### 2) Backend Setup
+```bash
+cd backend
+npm install
+```
+
+Create `backend/.env` (example)
+```env
+PORT=5000
+JWT_SECRET=your_secret_here
+FRONTEND_URL=http://localhost:5173
+DATABASE_URL="mongodb+srv://<user>:<pass>@<cluster>/<db>?retryWrites=true&w=majority"
+```
+
+Run backend:
+```bash
+npm run dev
+```
+
+### 3) Frontend Setup
+```bash
+cd ..
+npm install
+```
+
+Create `.env.local` (example)
+```env
+VITE_API_URL=http://localhost:5000
+VITE_GEMINI_API_KEY=your_gemini_key_here
+```
+
+Run frontend:
+```bash
+npm run dev
+```
+
+App URLs:
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:5000`
+
+---
+
+## Important Notes
+- **OTP Security**
+  - Farmer sees only **Pickup OTP**
+  - Buyer sees only **Delivery OTP**
+  - Transporter never receives OTPs via APIs; OTP is entered manually on verification
+- **Listing Quantity**
+  - Quantity reduces only at checkout / order creation
+  - If quantity hits `0`, listing becomes `SOLD`
+
+---
+
+## API Highlights
+- Listings: `GET /api/listings`, `POST /api/listings`, `GET /api/listings/my/listings`
+- Cart: `POST /api/cart/add`, `POST /api/cart/checkout`
+- Orders: `GET /api/orders`
+- Delivery Deals:
+  - Create: `POST /api/delivery-deals/create`
+  - Transporter deals: `GET /api/delivery-deals/available`
+  - Accept/Decline: `POST /api/delivery-deals/:id/accept`, `POST /api/delivery-deals/:id/decline`
+  - Verify OTP: `POST /api/delivery-deals/:id/verify-otp`
+
+---
+
+## Screens / Demo
+Add screenshots or demo video links here.
+
+---
+
+## License
+MIT (or update as needed)
