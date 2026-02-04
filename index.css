@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+body {
+  font-family: 'Outfit', sans-serif;
+}
+
+.anim-delay-0 {
+  animation-delay: 0ms;
+}
+
+.anim-delay-100 {
+  animation-delay: 100ms;
+}
+
+.anim-delay-150 {
+  animation-delay: 150ms;
+}
+
+.anim-delay-200 {
+  animation-delay: 200ms;
+}
+
+.anim-delay-300 {
+  animation-delay: 300ms;
+}
+
+.anim-delay-400 {
+  animation-delay: 400ms;
+}
+
+.anim-delay-450 {
+  animation-delay: 450ms;
+}
+
+.anim-delay-500 {
+  animation-delay: 500ms;
+}
+
+.anim-delay-600 {
+  animation-delay: 600ms;
+}
+
+.anim-delay-700 {
+  animation-delay: 700ms;
+}
+
+.anim-delay-750 {
+  animation-delay: 750ms;
+}
+
+.anim-delay-800 {
+  animation-delay: 800ms;
+}
+
+.anim-delay-900 {
+  animation-delay: 900ms;
+}
+
+.anim-delay-1000 {
+  animation-delay: 1000ms;
+}
+
+.anim-delay-1050 {
+  animation-delay: 1050ms;
+}
+
+.anim-delay-1100 {
+  animation-delay: 1100ms;
+}
+
+.anim-delay-1200 {
+  animation-delay: 1200ms;
+}
+
+.anim-delay-1300 {
+  animation-delay: 1300ms;
+}
+
+.anim-delay-1400 {
+  animation-delay: 1400ms;
+}
+
+.anim-delay-1350 {
+  animation-delay: 1350ms;
+}
+
+.anim-delay-1500 {
+  animation-delay: 1500ms;
+}

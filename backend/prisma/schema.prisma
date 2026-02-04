@@ -1,9 +1,11 @@
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
+  engineType = "binary"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
 }
 
 enum Role {
@@ -22,28 +24,71 @@ enum Language {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  phone     String   @unique
-  name      String
-  role      Role     @default(BUYER)
-  language  Language @default(ENGLISH)
-  email     String?  @unique
-  gender    String?
-  bio       String?
-  location  Json?    // { village, district, state }
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
   password  String
+  role      Role
+  status    String   @default("ACTIVE") // ACTIVE, PENDING_APPROVAL, SUSPENDED
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  listings      Listing[]
-  chatsAsFarmer NegotiatingChat[] @relation("FarmerChats")
-  chatsAsBuyer  NegotiatingChat[] @relation("BuyerChats")
-  deliveries    Delivery[]
-  messages      Message[]
+  farmerProfile      FarmerProfile?
+  buyerProfile       BuyerProfile?
+  transporterProfile TransporterProfile?
+
+  listings         Listing[]
+  chatsAsFarmer    NegotiatingChat[] @relation("FarmerChats")
+  chatsAsBuyer     NegotiatingChat[] @relation("BuyerChats")
+  messages         Message[]
+  ordersAsBuyer    Order[]           @relation("BuyerOrders")
+  ordersAsFarmer   Order[]           @relation("FarmerOrders")
+  cart             Cart?
+  deliveries       Delivery[]        @relation("TransporterDeliveries")
+}
+
+model FarmerProfile {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @unique @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id])
+  fullName  String
+  gender    String
+  phone     String
+  landSize  Float    // in acres
+  village   String
+  district  String
+  state     String
+  language  Language @default(ENGLISH)
+}
+
+model BuyerProfile {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @unique @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id])
+  fullName  String
+  gender    String
+  phone     String
+  city      String
+  state     String
+  language  Language @default(ENGLISH)
+}
+
+model TransporterProfile {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String   @unique @db.ObjectId
+  user           User     @relation(fields: [userId], references: [id])
+  fullName       String
+  gender         String
+  phone          String
+  vehicleType    String
+  vehicleNumber  String
+  capacity       Float    // Max load capacity in kg
+  pricePerKm     Float    // Cost per km
+  approvalStatus String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  language       Language @default(ENGLISH)
 }
 
 model Crop {
-  id       String    @id @default(uuid())
+  id       String    @id @default(auto()) @map("_id") @db.ObjectId
   name     String
   category String
   icon     String
@@ -51,10 +96,10 @@ model Crop {
 }
 
 model Listing {
-  id            String   @id @default(uuid())
-  farmerId      String
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  farmerId      String   @db.ObjectId
   farmer        User     @relation(fields: [farmerId], references: [id])
-  cropId        String
+  cropId        String   @db.ObjectId
   crop          Crop     @relation(fields: [cropId], references: [id])
   quantity      Float
   unit          String   @default("kg")
@@ -64,25 +109,29 @@ model Listing {
   grade         String
   harvestDate   DateTime
   images        String[]
-  status        String   @default("AVAILABLE")
+  status        String   @default("AVAILABLE") // AVAILABLE, PRICE_AGREED, LOCKED, IN_DELIVERY, SOLD
   location      String
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  chats NegotiatingChat[]
+  chats     NegotiatingChat[]
+  orders    Order[]
+  cartItems CartItem[]
 }
 
 model NegotiatingChat {
-  id           String   @id @default(uuid())
-  listingId    String
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  listingId    String   @db.ObjectId
   listing      Listing  @relation(fields: [listingId], references: [id])
-  buyerId      String
+  buyerId      String   @db.ObjectId
   buyer        User     @relation("BuyerChats", fields: [buyerId], references: [id])
-  farmerId     String
+  farmerId     String   @db.ObjectId
   farmer       User     @relation("FarmerChats", fields: [farmerId], references: [id])
   currentOffer Float
   status       String   @default("OPEN")
   lastMessage  String?
+  orderId      String?  @unique @db.ObjectId
+  order        Order?   @relation(fields: [orderId], references: [id])
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -90,10 +139,10 @@ model NegotiatingChat {
 }
 
 model Message {
-  id         String          @id @default(uuid())
-  chatId     String
+  id         String          @id @default(auto()) @map("_id") @db.ObjectId
+  chatId     String          @db.ObjectId
   chat       NegotiatingChat @relation(fields: [chatId], references: [id])
-  senderId   String
+  senderId   String          @db.ObjectId
   sender     User            @relation(fields: [senderId], references: [id])
   text       String
   type       String          @default("TEXT")
@@ -102,24 +151,75 @@ model Message {
 }
 
 model Delivery {
-  id            String  @id @default(uuid())
-  orderId       String  @unique
-  transporterId String?
-  transporter   User?   @relation(fields: [transporterId], references: [id])
-  status        String  @default("PENDING")
-  cost          Float
-  distance      Float
-  trackingData  Json?   // Live coordinates
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                String    @id @default(auto()) @map("_id") @db.ObjectId
+  orderId           String    @unique @db.ObjectId
+  order             Order     @relation(fields: [orderId], references: [id])
+  transporterId     String?   @db.ObjectId
+  transporter       User?     @relation(fields: [transporterId], references: [id], name: "TransporterDeliveries")
+  declinedBy        String[]  @default([])
+  pickupLocation    Json      // { address, lat, lng }
+  dropLocation      Json      // { address, lat, lng }
+  pickupOtp         String?
+  deliveryOtp       String?
+  status            String    @default("WAITING_FOR_TRANSPORTER") // WAITING_FOR_TRANSPORTER, TRANSPORTER_ASSIGNED, PICKED_UP, IN_TRANSIT, DELIVERED, COMPLETED
+  pricePerKm        Float
+  distance          Float
+  totalCost         Float
+  pickupTimestamp   DateTime?
+  deliveryTimestamp DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 }
 
 model MarketPrice {
-  id     String   @id @default(uuid())
-  cropId String
+  id     String   @id @default(auto()) @map("_id") @db.ObjectId
+  cropId String   @db.ObjectId
   mandi  String
   min    Float
   max    Float
   avg    Float
   date   DateTime @default(now())
+}
+
+model Order {
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  listingId              String   @db.ObjectId
+  listing                Listing  @relation(fields: [listingId], references: [id])
+  buyerId                String   @db.ObjectId
+  buyer                  User     @relation("BuyerOrders", fields: [buyerId], references: [id])
+  farmerId               String   @db.ObjectId
+  farmer                 User     @relation("FarmerOrders", fields: [farmerId], references: [id])
+  quantity               Float
+  priceFinal             Float
+  deliveryResponsibility String   // FARMER_ARRANGED | BUYER_ARRANGED
+  orderStatus            String   @default("ORDER_CREATED") // ORDER_CREATED, DELIVERY_PENDING, IN_DELIVERY, COMPLETED
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  
+  delivery     Delivery?
+  cartItem     CartItem?
+  negotiation  NegotiatingChat?
+}
+
+model Cart {
+  id        String     @id @default(auto()) @map("_id") @db.ObjectId
+  buyerId   String     @unique @db.ObjectId
+  buyer     User       @relation(fields: [buyerId], references: [id])
+  items     CartItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  cartId     String    @db.ObjectId
+  cart       Cart      @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  listingId  String    @db.ObjectId
+  listing    Listing   @relation(fields: [listingId], references: [id])
+  quantity   Float
+  lockedAt   DateTime?
+  orderId    String?   @unique @db.ObjectId
+  order      Order?    @relation(fields: [orderId], references: [id])
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 }

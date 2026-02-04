@@ -23,6 +23,7 @@ const Layout: React.FC<LayoutProps> = ({ children, userRole, userName, userLocat
       case UserRole.FARMER:
         return [
           { id: 'home', icon: 'fa-house', label: t('home') },
+          { id: 'orders', icon: 'fa-box', label: t('my_orders') || 'Orders' },
           { id: 'listings', icon: 'fa-wheat-awn', label: t('my_listings') },
           { id: 'prices', icon: 'fa-chart-line', label: t('market_prices') },
           { id: 'chats', icon: 'fa-comments', label: t('offers') },
@@ -112,6 +113,7 @@ const Layout: React.FC<LayoutProps> = ({ children, userRole, userName, userLocat
           <button
             onClick={onLogout}
             className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:text-red-500 transition-colors"
+            aria-label="Logout"
           >
             <i className="fas fa-power-off"></i>
           </button>

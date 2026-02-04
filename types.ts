@@ -20,6 +20,30 @@ export enum Gender {
   OTHER = 'OTHER'
 }
 
+export enum ListingStatus {
+  AVAILABLE = 'AVAILABLE',
+  PRICE_AGREED = 'PRICE_AGREED',
+  LOCKED = 'LOCKED',
+  IN_DELIVERY = 'IN_DELIVERY',
+  SOLD = 'SOLD'
+}
+
+export enum OrderStatus {
+  ORDER_CREATED = 'ORDER_CREATED',
+  DELIVERY_PENDING = 'DELIVERY_PENDING',
+  IN_DELIVERY = 'IN_DELIVERY',
+  COMPLETED = 'COMPLETED'
+}
+
+export enum DeliveryStatus {
+  WAITING_FOR_TRANSPORTER = 'WAITING_FOR_TRANSPORTER',
+  TRANSPORTER_ASSIGNED = 'TRANSPORTER_ASSIGNED',
+  PICKED_UP = 'PICKED_UP',
+  IN_TRANSIT = 'IN_TRANSIT',
+  DELIVERED = 'DELIVERED',
+  COMPLETED = 'COMPLETED'
+}
+
 export interface User {
   id: string;
   phone: string;
@@ -52,11 +76,21 @@ export interface Listing {
   expectedPrice: number; // per kg
   mandiPrice?: number;
   msp?: number;
-  grade: 'Premium' | 'Good' | 'Average' | 'Fair';
+  grade: string;
   harvestDate: string;
   images: string[];
-  status: 'AVAILABLE' | 'SOLD' | 'NEGOTIATING';
+  status: ListingStatus;
   location: string;
+  crop?: Crop;
+  farmer?: {
+    id: string;
+    name?: string;
+    phone?: string;
+    village?: string;
+    district?: string;
+    state?: string;
+    location?: string;
+  };
 }
 
 export interface NegotiatingChat {
@@ -68,6 +102,7 @@ export interface NegotiatingChat {
   status: 'OPEN' | 'ACCEPTED' | 'REJECTED';
   lastMessage: string;
   updatedAt: string;
+  orderId?: string;
 }
 
 export interface Message {
@@ -96,4 +131,57 @@ export interface Delivery {
   status: 'PENDING' | 'PICKED_UP' | 'IN_TRANSIT' | 'DELIVERED';
   cost: number;
   distance: number;
+}
+
+export interface Order {
+  id: string;
+  listingId: string;
+  buyerId: string;
+  farmerId: string;
+  quantity: number;
+  priceFinal: number;
+  deliveryResponsibility: 'FARMER_ARRANGED' | 'BUYER_ARRANGED';
+  orderStatus: OrderStatus;
+  createdAt: string;
+  updatedAt: string;
+  listing?: Listing;
+  buyer?: User;
+  farmer?: User;
+  delivery?: DeliveryDeal;
+}
+
+export interface Cart {
+  id: string;
+  buyerId: string;
+  items: CartItem[];
+}
+
+export interface CartItem {
+  id: string;
+  cartId: string;
+  listingId: string;
+  quantity: number;
+  lockedAt?: string;
+  listing?: Listing & { crop: Crop; farmer: User };
+}
+
+export interface DeliveryDeal {
+  id: string;
+  orderId: string;
+  transporterId?: string;
+  declinedBy?: string[];
+  pickupLocation: { address: string; lat: number; lng: number };
+  dropLocation: { address: string; lat: number; lng: number };
+  pickupOtp?: string;
+  deliveryOtp?: string;
+  status: DeliveryStatus;
+  pricePerKm: number;
+  distance: number;
+  totalCost: number;
+  pickupTimestamp?: string;
+  deliveryTimestamp?: string;
+  createdAt: string;
+  updatedAt: string;
+  order?: Order;
+  transporter?: User;
 }

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { geminiService } from '../services/geminiService';
 import { Language, User, Gender, Crop } from '../types';
 import { TRANSLATIONS, CROPS } from '../constants.tsx';
+import TransporterDealsView from './TransporterDealsView';
 
 interface Vehicle {
   type: string;
@@ -99,6 +100,26 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
   const availableJobs = deliveries.filter(d => d.status === 'OPEN_FOR_TRANSIT');
   const history = deliveries.filter(d => d.transporterId === user.id && d.status === 'DELIVERED');
 
+  const experienceWidthClass = (() => {
+    const years = Number.parseInt(tempProfile.experience, 10);
+    const percent = Number.isFinite(years) ? Math.min(Math.max(0, years * 10), 100) : 0;
+    const widthClasses = [
+      'w-0',
+      'w-[10%]',
+      'w-[20%]',
+      'w-[30%]',
+      'w-[40%]',
+      'w-1/2',
+      'w-[60%]',
+      'w-[70%]',
+      'w-[80%]',
+      'w-[90%]',
+      'w-full'
+    ];
+    const idx = Math.min(10, Math.max(0, Math.floor(percent / 10)));
+    return widthClasses[idx];
+  })();
+
   const handleAcceptJob = (job: any) => {
     onUpdateStatus(job.id, 'ACCEPTED', user.id);
     geminiService.speak("Job accepted. Navigation details sent to your device.");
@@ -124,219 +145,7 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
   const [homeView, setHomeView] = useState<'active' | 'market'>('active');
 
   const renderHome = () => (
-    <div className="space-y-6 animate-in fade-in duration-500 pb-20">
-      {/* View Toggle */}
-      <div className="bg-gray-100 p-1.5 rounded-2xl flex relative">
-        <div className={`absolute top-1.5 bottom-1.5 w-[calc(50%-6px)] bg-white rounded-xl shadow-sm transition-all duration-300 ease-spring ${homeView === 'market' ? 'translate-x-[calc(100%+6px)]' : 'translate-x-0'}`}></div>
-        <button
-          onClick={() => setHomeView('active')}
-          className={`flex-1 relative z-10 py-3 text-[10px] font-black uppercase tracking-widest transition-colors ${homeView === 'active' ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'}`}
-        >
-          Active Shipments {myJobs.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-blue-100 text-blue-600 rounded-full">{myJobs.length}</span>}
-        </button>
-        <button
-          onClick={() => setHomeView('market')}
-          className={`flex-1 relative z-10 py-3 text-[10px] font-black uppercase tracking-widest transition-colors ${homeView === 'market' ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'}`}
-        >
-          Find Loads {availableJobs.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-emerald-100 text-emerald-600 rounded-full">{availableJobs.length}</span>}
-        </button>
-      </div>
-
-      {homeView === 'market' && (
-        <div className="space-y-6 animate-in slide-in-from-right duration-300">
-          <div className="flex justify-between items-center px-2">
-            <div>
-              <h3 className="text-lg font-black text-gray-900 tracking-tight">Marketplace</h3>
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Available assignments for your fleet</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button className="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:bg-gray-100">
-                <i className="fas fa-filter text-xs"></i>
-              </button>
-              <button className="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:bg-gray-100">
-                <i className="fas fa-sort text-xs"></i>
-              </button>
-            </div>
-          </div>
-
-          {availableJobs.length === 0 ? (
-            <div className="p-12 text-center text-gray-400">
-              <i className="fas fa-inbox text-4xl mb-4 opacity-20"></i>
-              <p className="text-xs font-black uppercase tracking-widest">No loads available right now</p>
-            </div>
-          ) : (
-            <div className="grid gap-5 md:grid-cols-2">
-              {availableJobs.map((job, idx) => (
-                <div key={job.id} className="bg-white p-6 rounded-[32px] border border-gray-100 shadow-sm hover:shadow-xl transition-all group animate-in slide-in-from-bottom duration-500" style={{ animationDelay: `${idx * 100}ms` }}>
-                  <div className="flex justify-between items-start mb-6">
-                    <div className="flex items-center gap-4">
-                      <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center text-2xl group-hover:scale-110 transition-transform shadow-inner border border-emerald-100">
-                        {job.crop === 'Tomato' ? '🍅' : job.crop === 'Wheat' ? '🌾' : '📦'}
-                      </div>
-                      <div>
-                        <h4 className="font-black text-lg text-gray-900 leading-none mb-1.5">{job.crop} Transport</h4>
-                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
-                          <i className="fas fa-weight-hanging text-emerald-500"></i> {Math.floor(Math.random() * 2000) + 500} kg
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-2xl font-black text-gray-900 tracking-tighter">₹{job.cost}</p>
-                      <p className="text-[9px] font-black text-gray-300 uppercase tracking-widest">Fixed Rate</p>
-                    </div>
-                  </div>
-
-                  <div className="bg-gray-50 rounded-2xl p-4 mb-6 space-y-3">
-                    <div className="flex items-start gap-3 relative">
-                      <div className="flex flex-col items-center mt-1">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                        <div className="w-0.5 h-6 bg-gray-200 my-0.5"></div>
-                        <div className="w-2 h-2 rounded-full bg-red-400"></div>
-                      </div>
-                      <div className="flex-1 space-y-4">
-                        <div>
-                          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Pickup From</p>
-                          <p className="text-xs font-bold text-gray-900">{job.pickupAddress?.split(',')[0] || 'Farm Location'}</p>
-                        </div>
-                        <div>
-                          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Deliver To</p>
-                          <p className="text-xs font-bold text-gray-900">{job.destination}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      handleAcceptJob(job);
-                      setHomeView('active');
-                    }}
-                    className="w-full bg-gray-900 text-white py-4 rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] hover:bg-emerald-600 transition-colors shadow-lg active:scale-95 flex items-center justify-center gap-2 group-hover:shadow-emerald-200"
-                  >
-                    Accept Assignment <i className="fas fa-arrow-right group-hover:translate-x-1 transition-transform"></i>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {homeView === 'active' && (
-        <div className="space-y-6 animate-in slide-in-from-left duration-300">
-          <div className="flex justify-between items-center px-2">
-            <div>
-              <h3 className="text-lg font-black text-gray-900 tracking-tight">Active Shipments</h3>
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Live tracking updates</p>
-            </div>
-            {myJobs.length > 0 && <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-black">
-              {myJobs.length} Active
-            </span>}
-          </div>
-
-          {myJobs.length === 0 ? (
-            <div className="bg-white p-12 rounded-[40px] border-2 border-dashed border-gray-100 text-center">
-              <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-300 text-2xl mx-auto mb-4">
-                <i className="fas fa-truck-ramp-box"></i>
-              </div>
-              <p className="text-[11px] font-black text-gray-400 uppercase tracking-widest">Your queue is empty.</p>
-              <button
-                onClick={() => setHomeView('market')}
-                className="mt-4 px-6 py-3 bg-gray-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-600 transition-colors shadow-lg"
-              >
-                Find Loads in Marketplace
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {myJobs.map(job => {
-                const nextAction = getNextStatus(job.status);
-                // Calculate progress for UI
-                const steps = ['ACCEPTED', 'PICKED_UP', 'IN_TRANSIT', 'DELIVERED'];
-                const currentStepIdx = steps.indexOf(job.status);
-                const progress = ((currentStepIdx) / (steps.length - 1)) * 100;
-
-                return (
-                  <div key={job.id} className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl shadow-blue-500/5 relative overflow-hidden ring-4 ring-transparent hover:ring-blue-50 transition-all">
-                    {/* Map Background Placeholder */}
-                    <div className="absolute top-0 right-0 w-2/3 h-full opacity-5 pointer-events-none bg-[url('https://upload.wikimedia.org/wikipedia/commons/e/ec/World_map_blank_without_borders.svg')] bg-cover bg-center"></div>
-
-                    <div className="relative z-10">
-                      <div className="flex justify-between items-start mb-8">
-                        <div className="flex items-center gap-4">
-                          <div className="w-16 h-16 bg-blue-600 text-white rounded-[24px] flex items-center justify-center text-3xl shadow-lg shadow-blue-200">
-                            {job.crop === 'Tomato' ? '🍅' : job.crop === 'Wheat' ? '🌾' : '🚚'}
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest ${job.status === 'IN_TRANSIT' ? 'bg-amber-100 text-amber-700' : 'bg-blue-50 text-blue-700'}`}>
-                                {job.status.replace('_', ' ')}
-                              </span>
-                              <span className="text-[10px] font-bold text-gray-400">#{job.id}</span>
-                            </div>
-                            <h3 className="text-xl font-black text-gray-900">{job.crop} Delivery</h3>
-                          </div>
-                        </div>
-                        <div className="text-center">
-                          <div className="text-2xl font-black text-gray-900">₹{job.cost}</div>
-                          <div className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Payout</div>
-                        </div>
-                      </div>
-
-                      {/* Timeline Visualization */}
-                      <div className="bg-gray-50 rounded-[28px] p-6 mb-8 border border-gray-100">
-                        <div className="relative h-2 bg-gray-200 rounded-full mb-6 mx-2">
-                          <div className="absolute top-0 left-0 h-full bg-blue-500 rounded-full transition-all duration-1000" style={{ width: `${progress}%` }}></div>
-                          {/* Steps */}
-                          <div className="absolute top-1/2 left-0 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow-sm flex items-center justify-center" style={{ left: '0%' }}>
-                            {currentStepIdx >= 0 && <i className="fas fa-check text-[6px] text-white"></i>}
-                          </div>
-                          <div className="absolute top-1/2 left-1/3 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full border-2 border-white shadow-sm flex items-center justify-center transition-colors delay-100" style={{ left: '33%', backgroundColor: currentStepIdx >= 1 ? '#3b82f6' : '#e5e7eb' }}>
-                            {currentStepIdx >= 1 && <i className="fas fa-check text-[6px] text-white"></i>}
-                          </div>
-                          <div className="absolute top-1/2 left-2/3 -translate-y-1/2 -translate-x-1/2 w-4 h-4 rounded-full border-2 border-white shadow-sm flex items-center justify-center transition-colors delay-200" style={{ left: '66%', backgroundColor: currentStepIdx >= 2 ? '#3b82f6' : '#e5e7eb' }}>
-                            {currentStepIdx >= 2 && <i className="fas fa-check text-[6px] text-white"></i>}
-                          </div>
-                          <div className="absolute top-1/2 right-0 -translate-y-1/2 translate-x-1/2 w-4 h-4 rounded-full border-2 border-white shadow-sm flex items-center justify-center transition-colors delay-300" style={{ left: '100%', backgroundColor: currentStepIdx >= 3 ? '#3b82f6' : '#e5e7eb' }}>
-                            {currentStepIdx >= 3 && <i className="fas fa-check text-[6px] text-white"></i>}
-                          </div>
-                        </div>
-                        <div className="flex justify-between text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                          <span>Accepted</span>
-                          <span>Picked Up</span>
-                          <span>In Transit</span>
-                          <span>Delivered</span>
-                        </div>
-                      </div>
-
-                      {/* Action Buttons */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <button className="py-4 bg-gray-100 rounded-2xl text-[10px] font-black uppercase tracking-widest text-gray-600 hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
-                          <i className="fas fa-phone"></i> Contact Farmer
-                        </button>
-
-                        {nextAction ? (
-                          <button
-                            onClick={() => handleNextStatus(job.id, job.status)}
-                            className="py-4 bg-blue-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-200 hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-2"
-                          >
-                            {nextAction.label} <i className={`fas ${nextAction.icon}`}></i>
-                          </button>
-                        ) : (
-                          <button disabled className="py-4 bg-green-100 text-green-600 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 cursor-default">
-                            <i className="fas fa-check-circle"></i> Completed
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+    <TransporterDealsView />
   );
 
   const renderEarnings = () => (
@@ -501,7 +310,7 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
                 <div className="space-y-1.5 group/field">
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest group-hover/field:text-indigo-500 transition-colors">Full Name</label>
                   {isEditingProfile ? (
-                    <input type="text" value={tempProfile.name} onChange={e => setTempProfile({ ...tempProfile, name: e.target.value })} className="w-full p-4 bg-gray-50 rounded-2xl font-bold text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" />
+                    <input type="text" value={tempProfile.name} onChange={e => setTempProfile({ ...tempProfile, name: e.target.value })} className="w-full p-4 bg-gray-50 rounded-2xl font-bold text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" aria-label="Full Name" />
                   ) : (
                     <p className="text-base font-black text-gray-900">{user.name}</p>
                   )}
@@ -520,7 +329,7 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
                 <div className="space-y-1.5 group/field">
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest group-hover/field:text-indigo-500 transition-colors">Email Address</label>
                   {isEditingProfile ? (
-                    <input type="email" value={tempProfile.email} onChange={e => setTempProfile({ ...tempProfile, email: e.target.value })} className="w-full p-4 bg-gray-50 rounded-2xl font-bold text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" placeholder="name@example.com" />
+                    <input type="email" value={tempProfile.email} onChange={e => setTempProfile({ ...tempProfile, email: e.target.value })} className="w-full p-4 bg-gray-50 rounded-2xl font-bold text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" placeholder="name@example.com" aria-label="Email Address" />
                   ) : (
                     <p className="text-base font-black text-gray-900 break-all">{user.email || '—'}</p>
                   )}
@@ -540,7 +349,7 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Village / City</label>
                     {isEditingProfile ? (
-                      <input type="text" value={tempProfile.village} onChange={e => setTempProfile({ ...tempProfile, village: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+                      <input type="text" value={tempProfile.village} onChange={e => setTempProfile({ ...tempProfile, village: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" aria-label="Village or City" />
                     ) : (
                       <p className="text-sm font-black text-gray-900">{user.location?.village || '—'}</p>
                     )}
@@ -550,7 +359,7 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
                     <div className="space-y-1.5">
                       <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">District</label>
                       {isEditingProfile ? (
-                        <input type="text" value={tempProfile.district} onChange={e => setTempProfile({ ...tempProfile, district: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-xs focus:ring-2 focus:ring-emerald-500 outline-none" />
+                        <input type="text" value={tempProfile.district} onChange={e => setTempProfile({ ...tempProfile, district: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-xs focus:ring-2 focus:ring-emerald-500 outline-none" aria-label="District" />
                       ) : (
                         <p className="text-sm font-black text-gray-900">{user.location?.district || '—'}</p>
                       )}
@@ -558,7 +367,7 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
                     <div className="space-y-1.5">
                       <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">State</label>
                       {isEditingProfile ? (
-                        <input type="text" value={tempProfile.state} onChange={e => setTempProfile({ ...tempProfile, state: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-xs focus:ring-2 focus:ring-emerald-500 outline-none" />
+                        <input type="text" value={tempProfile.state} onChange={e => setTempProfile({ ...tempProfile, state: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-xs focus:ring-2 focus:ring-emerald-500 outline-none" aria-label="State" />
                       ) : (
                         <p className="text-sm font-black text-gray-900">{user.location?.state || '—'}</p>
                       )}
@@ -578,13 +387,13 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Experience</label>
                     {isEditingProfile ? (
                       <div className="relative">
-                        <input type="text" value={tempProfile.experience} onChange={e => setTempProfile({ ...tempProfile, experience: e.target.value })} className="w-full p-3 pl-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                        <input type="text" value={tempProfile.experience} onChange={e => setTempProfile({ ...tempProfile, experience: e.target.value })} className="w-full p-3 pl-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-sm focus:ring-2 focus:ring-blue-500 outline-none" aria-label="Experience in years" />
                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400 pointer-events-none">Years</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
                         <div className="h-2 flex-1 bg-gray-200 rounded-full overflow-hidden">
-                          <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(parseInt(tempProfile.experience) * 10, 100)}%` }}></div>
+                          <div className={`h-full bg-blue-500 rounded-full ${experienceWidthClass}`}></div>
                         </div>
                         <span className="text-sm font-black text-gray-900 whitespace-nowrap">{tempProfile.experience} Years</span>
                       </div>
@@ -594,7 +403,7 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Preferred Routes</label>
                     {isEditingProfile ? (
-                      <input type="text" value={tempProfile.routes} onChange={e => setTempProfile({ ...tempProfile, routes: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <input type="text" value={tempProfile.routes} onChange={e => setTempProfile({ ...tempProfile, routes: e.target.value })} className="w-full p-3 bg-white border border-gray-200 rounded-xl font-bold text-gray-900 text-sm focus:ring-2 focus:ring-blue-500 outline-none" aria-label="Preferred Routes" />
                     ) : (
                       <div className="flex flex-wrap gap-2">
                         {tempProfile.routes.split(',').map((route, i) => (
@@ -704,11 +513,11 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
               <div className="grid grid-cols-2 gap-5">
                 <div className="space-y-2 group">
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest px-1 group-hover:text-indigo-500 transition-colors">License Plate</label>
-                  <input type="text" value={vehicleForm.licensePlate} onChange={e => setVehicleForm({ ...vehicleForm, licensePlate: e.target.value })} className="w-full p-4 bg-gray-50 rounded-2xl font-black text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" placeholder="KA-01-AB-1234" />
+                  <input type="text" value={vehicleForm.licensePlate} onChange={e => setVehicleForm({ ...vehicleForm, licensePlate: e.target.value })} className="w-full p-4 bg-gray-50 rounded-2xl font-black text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" placeholder="KA-01-AB-1234" aria-label="License Plate" />
                 </div>
                 <div className="space-y-2 group">
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest px-1 group-hover:text-indigo-500 transition-colors">Rate per KM (₹)</label>
-                  <input type="number" value={vehicleForm.costPerKm} onChange={e => setVehicleForm({ ...vehicleForm, costPerKm: Number(e.target.value) })} className="w-full p-4 bg-gray-50 rounded-2xl font-black text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" />
+                  <input type="number" value={vehicleForm.costPerKm} onChange={e => setVehicleForm({ ...vehicleForm, costPerKm: Number(e.target.value) })} className="w-full p-4 bg-gray-50 rounded-2xl font-black text-gray-900 text-sm border-2 border-transparent focus:border-indigo-500 focus:bg-white transition-all outline-none" aria-label="Rate per KM" />
                 </div>
               </div>
             </div>

@@ -3,6 +3,9 @@ import React, { useState, useEffect } from 'react';
 import { CROPS, TRANSLATIONS } from '../constants.tsx';
 import { Listing, UserRole, Language, User, Gender } from '../types';
 import { geminiService } from '../services/geminiService';
+import { cartAPI, listingAPI } from '../services/api';
+import CartView from './CartView';
+import OrdersView from './OrdersView';
 
 interface BuyerDashboardProps {
   activeTab: string;
@@ -36,6 +39,11 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
   const [selectedDeliveryToRate, setSelectedDeliveryToRate] = useState<any>(null);
   const [hoverRating, setHoverRating] = useState(0);
   const [selectedStars, setSelectedStars] = useState(0);
+  const [cartItemCount, setCartItemCount] = useState(0);
+  const [addingToCart, setAddingToCart] = useState<string | null>(null);
+  const [showQuantityModal, setShowQuantityModal] = useState(false);
+  const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
+  const [quantityInput, setQuantityInput] = useState('50');
 
   /* New business profile state */
   const [tempProfile, setTempProfile] = useState({
@@ -51,6 +59,14 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
     annualVolume: '500 Tons'
   });
 
+  const [listings, setListings] = useState<Listing[]>([]);
+  const [loadingListings, setLoadingListings] = useState(true);
+
+  const getAnimDelayClass = (idx: number, stepMs: number) => {
+    const ms = Math.min(1500, idx * stepMs);
+    return `anim-delay-${ms}`;
+  };
+
   useEffect(() => {
     setTempProfile({
       name: user.name,
@@ -64,7 +80,65 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
       businessType: 'Wholesale Trader',
       annualVolume: '500 Tons'
     });
+    loadCartCount();
+    loadListings();
   }, [user]);
+
+  const loadListings = async () => {
+    try {
+      setLoadingListings(true);
+      const data = await listingAPI.getAll();
+      setListings(data.listings || []);
+    } catch (error) {
+      console.error('Failed to load listings:', error);
+    } finally {
+      setLoadingListings(false);
+    }
+  };
+
+  const loadCartCount = async () => {
+    try {
+      const response = await cartAPI.get();
+      setCartItemCount(response.cart?.items?.length || 0);
+    } catch (error) {
+      console.error('Failed to load cart count:', error);
+    }
+  };
+
+  const handleAddToCartClick = (listing: Listing) => {
+    setSelectedListing(listing);
+    const suggested = Math.max(1, Math.min(5, Math.floor(listing.quantity || 1)));
+    setQuantityInput(String(suggested));
+    setShowQuantityModal(true);
+  };
+
+  const handleAddToCart = async () => {
+    if (!selectedListing) return;
+
+    const quantity = parseFloat(quantityInput);
+    if (isNaN(quantity) || quantity <= 0) {
+      alert('Please enter a valid quantity');
+      return;
+    }
+
+    if (quantity > selectedListing.quantity) {
+      alert(`Only ${selectedListing.quantity} kg available`);
+      return;
+    }
+
+    try {
+      setAddingToCart(selectedListing.id);
+      await cartAPI.add(selectedListing.id, quantity);
+      await loadCartCount();
+      setShowQuantityModal(false);
+      setSelectedListing(null);
+      geminiService.speak(`${quantity} kg added to cart successfully!`);
+    } catch (error: any) {
+      alert(error.message || 'Failed to add to cart');
+    } finally {
+      setAddingToCart(null);
+    }
+  };
 
   const t = (key: string) => {
     return TRANSLATIONS[language]?.[key] || TRANSLATIONS.en[key] || key;
@@ -81,28 +155,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
     geminiService.speak("Business account updated successfully.");
   };
 
-  const [listings] = useState<Listing[]>([
-    {
-      id: 'l1', farmerId: 'f1', cropId: '1', quantity: 1200, unit: 'kg', expectedPrice: 28, mandiPrice: 24,
-      grade: 'A', harvestDate: '2023-11-10', images: ['https://images.unsplash.com/photo-1592924357228-91a4daadcfea?auto=format&fit=crop&q=80&w=400'],
-      status: 'AVAILABLE', location: 'Guntur, AP'
-    },
-    {
-      id: 'l2', farmerId: 'f2', cropId: '3', quantity: 5000, unit: 'kg', expectedPrice: 18, mandiPrice: 20,
-      grade: 'B', harvestDate: '2023-11-12', images: ['https://images.unsplash.com/photo-1508747703725-719777637510?auto=format&fit=crop&q=80&w=400'],
-      status: 'AVAILABLE', location: 'Kurnool, AP'
-    },
-    {
-      id: 'l3', farmerId: 'f3', cropId: '2', quantity: 2500, unit: 'kg', expectedPrice: 25, mandiPrice: 23,
-      grade: 'A', harvestDate: '2023-11-14', images: ['https://images.unsplash.com/photo-1501430654243-c934cec2e1c0?auto=format&fit=crop&q=80&w=400'],
-      status: 'AVAILABLE', location: 'Nellore, AP'
-    },
-    {
-      id: 'l4', farmerId: 'f4', cropId: '6', quantity: 800, unit: 'kg', expectedPrice: 95, mandiPrice: 85,
-      grade: 'A', harvestDate: '2023-11-15', images: ['https://images.unsplash.com/photo-1591073113125-e46713c829ed?auto=format&fit=crop&q=80&w=400'],
-      status: 'AVAILABLE', location: 'Ratnagiri, MH'
-    }
-  ]);
+
 
   const filteredListings = listings.filter(l => {
     const cropName = CROPS.find(c => c.id === l.cropId)?.name.toLowerCase() || '';
@@ -128,6 +181,9 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
       { label: 'Arrived', status: 'DELIVERED', icon: 'fa-check-circle' }
     ];
     const currentStepIndex = steps.findIndex(s => s.status === status);
+    const progressWidthClass = ['w-0', 'w-0', 'w-1/3', 'w-2/3', 'w-full'][
+      Math.min(steps.length, Math.max(0, currentStepIndex + 1))
+    ];
 
     return (
       <div className="relative pt-4 pb-2">
@@ -135,8 +191,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
         <div className="absolute top-1/2 left-0 w-full h-1 bg-gray-100 -translate-y-1/2 z-0 rounded-full"></div>
         {/* Active Progress Bar */}
         <div
-          className="absolute top-1/2 left-0 h-1 bg-blue-500 -translate-y-1/2 z-0 rounded-full transition-all duration-1000"
-          style={{ width: `${(currentStepIndex / (steps.length - 1)) * 100}%` }}
+          className={`absolute top-1/2 left-0 h-1 bg-blue-500 -translate-y-1/2 z-0 rounded-full transition-all duration-1000 ${progressWidthClass}`}
         ></div>
 
         <div className="relative z-10 flex justify-between w-full">
@@ -237,8 +292,25 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full bg-gray-50 border-0 py-5 pl-14 pr-6 rounded-[24px] text-gray-900 font-bold shadow-sm focus:ring-4 focus:ring-green-100 transition-all outline-none"
+            aria-label="Search crops"
           />
           <i className="fas fa-search absolute left-6 top-1/2 -translate-y-1/2 text-gray-400 text-lg"></i>
+
+          {/* Header Cart Button */}
+          <button
+            onClick={() => onNavigate('cart')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 w-12 h-12 bg-white rounded-2xl shadow-sm flex items-center justify-center text-gray-600 hover:text-green-600 transition-colors"
+            aria-label="View Cart"
+          >
+            <div className="relative">
+              <i className="fas fa-shopping-cart text-lg"></i>
+              {cartItemCount > 0 && (
+                <span className="absolute -top-2 -right-2 w-4 h-4 bg-red-500 text-white rounded-full text-[9px] flex items-center justify-center font-black">
+                  {cartItemCount}
+                </span>
+              )}
+            </div>
+          </button>
         </div>
 
         <div className="overflow-x-auto no-scrollbar py-4 flex gap-3">
@@ -256,45 +328,71 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
         </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {filteredListings.map((listing, idx) => {
-          const crop = CROPS.find(c => c.id === listing.cropId);
-          return (
-            <div key={listing.id} className="bg-white rounded-[40px] p-2 shadow-sm border border-gray-100 hover:shadow-xl hover:border-green-100 transition-all group animate-in slide-in-from-bottom duration-500" style={{ animationDelay: `${idx * 100}ms` }}>
-              <div className="relative h-56 rounded-[32px] overflow-hidden mb-4">
-                <img src={listing.images[0]} alt="Crop" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
-                <div className="absolute top-4 right-4 bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm">
-                  {listing.grade} Grade
+      {loadingListings ? (
+        <div className="flex flex-col items-center justify-center p-20 bg-white rounded-[40px] border-2 border-dashed border-gray-100 italic text-gray-400">
+          <i className="fas fa-spinner fa-spin text-4xl mb-4"></i>
+          <p className="font-black uppercase tracking-widest text-[10px]">Fetching fresh harvests...</p>
+        </div>
+      ) : filteredListings.length === 0 ? (
+        <div className="bg-white p-20 rounded-[40px] border-2 border-dashed border-gray-100 text-center">
+          <i className="fas fa-search text-gray-200 text-5xl mb-4"></i>
+          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">No matching harvests found</p>
+        </div>
+      ) : (
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {filteredListings.map((listing, idx) => {
+            const crop = listing.crop || CROPS.find(c => c.id === listing.cropId);
+            return (
+              <div key={listing.id} className={`bg-white rounded-[40px] p-2 shadow-sm border border-gray-100 hover:shadow-xl hover:border-green-100 transition-all group animate-in slide-in-from-bottom duration-500 ${getAnimDelayClass(idx, 100)}`}>
+                <div className="relative h-56 rounded-[32px] overflow-hidden mb-4">
+                  <img src={listing.images[0]} alt="Crop" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+                  <div className="absolute top-4 right-4 bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-sm">
+                    {listing.grade} Grade
+                  </div>
+                  <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md py-2 px-4 rounded-2xl text-white">
+                    <p className="text-[10px] font-bold uppercase tracking-widest opacity-80 mb-0.5">{listing.location}</p>
+                    <p className="text-lg font-black">{crop?.name}</p>
+                    {listing.farmer?.name && (
+                      <p className="text-[9px] font-black uppercase tracking-widest opacity-80 mt-1">
+                        Farmer: {listing.farmer.name}
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md py-2 px-4 rounded-2xl text-white">
-                  <p className="text-[10px] font-bold uppercase tracking-widest opacity-80 mb-0.5">{listing.location}</p>
-                  <p className="text-lg font-black">{crop?.name}</p>
+
+                <div className="px-4 pb-6">
+                  <div className="flex justify-between items-baseline mb-6">
+                    <div>
+                      <p className="text-2xl font-black text-gray-900 leading-none">₹{listing.expectedPrice}<span className="text-sm text-gray-400 font-bold ml-1">/kg</span></p>
+                      <p className="text-[10px] font-bold text-green-600 uppercase tracking-widest mt-1">Mandi: ₹{listing.mandiPrice}/kg</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xl font-black text-gray-900">{listing.quantity}</p>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Available (Kg)</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => handleAddToCartClick(listing)}
+                      className="bg-blue-600 text-white py-4 rounded-[20px] font-black uppercase text-[9px] tracking-widest shadow-lg shadow-blue-100 hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-2"
+                    >
+                      <i className="fas fa-cart-plus"></i>
+                      Add to Cart
+                    </button>
+                    <button
+                      onClick={() => onNegotiate(listing)}
+                      className="bg-green-600 text-white py-4 rounded-[20px] font-black uppercase text-[9px] tracking-widest shadow-lg shadow-green-100 hover:bg-green-700 active:scale-95 transition-all flex items-center justify-center gap-2"
+                    >
+                      <i className="fas fa-handshake"></i> Negotiate
+                    </button>
+                  </div>
                 </div>
               </div>
-
-              <div className="px-4 pb-6">
-                <div className="flex justify-between items-baseline mb-6">
-                  <div>
-                    <p className="text-2xl font-black text-gray-900 leading-none">₹{listing.expectedPrice}<span className="text-sm text-gray-400 font-bold ml-1">/kg</span></p>
-                    <p className="text-[10px] font-bold text-green-600 uppercase tracking-widest mt-1">Mandi: ₹{listing.mandiPrice}/kg</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xl font-black text-gray-900">{listing.quantity}</p>
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Available (Kg)</p>
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => onNegotiate(listing)}
-                  className="w-full bg-green-600 text-white py-5 rounded-[24px] font-black uppercase text-[10px] tracking-widest shadow-xl shadow-green-100 hover:bg-green-700 active:scale-95 transition-all flex items-center justify-center gap-2"
-                >
-                  <i className="fas fa-handshake"></i> Negotiate Deal
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 
@@ -317,7 +415,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
             const priceDiff = ((neg.currentOffer - neg.marketPrice) / neg.marketPrice) * 100;
 
             return (
-              <div key={neg.id} className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-sm hover:shadow-xl transition-all group animate-in slide-in-from-bottom duration-500" style={{ animationDelay: `${idx * 150}ms` }}>
+              <div key={neg.id} className={`bg-white p-8 rounded-[40px] border border-gray-100 shadow-sm hover:shadow-xl transition-all group animate-in slide-in-from-bottom duration-500 ${getAnimDelayClass(idx, 150)}`}>
                 <div className="flex justify-between items-start mb-6">
                   <div className="flex items-center gap-5">
                     <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-[28px] flex items-center justify-center text-4xl shadow-inner group-hover:scale-110 transition-transform">
@@ -407,7 +505,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Legal Trading Name</label>
                     {isEditingProfile ? (
-                      <input type="text" value={tempProfile.name} onChange={e => setTempProfile({ ...tempProfile, name: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <input type="text" value={tempProfile.name} onChange={e => setTempProfile({ ...tempProfile, name: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" aria-label="Legal Trading Name" />
                     ) : (
                       <p className="text-sm font-black text-gray-900">{user.name}</p>
                     )}
@@ -417,7 +515,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Business Type</label>
                     {isEditingProfile ? (
-                      <select value={tempProfile.businessType} onChange={e => setTempProfile({ ...tempProfile, businessType: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none appearance-none">
+                      <select value={tempProfile.businessType} onChange={e => setTempProfile({ ...tempProfile, businessType: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none appearance-none" aria-label="Business Type">
                         <option>Retailer</option>
                         <option>Wholesale Trader</option>
                         <option>Food Processor</option>
@@ -432,7 +530,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">GSTIN / License</label>
                     {isEditingProfile ? (
-                      <input type="text" value={tempProfile.gstin} onChange={e => setTempProfile({ ...tempProfile, gstin: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <input type="text" value={tempProfile.gstin} onChange={e => setTempProfile({ ...tempProfile, gstin: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" aria-label="GSTIN" />
                     ) : (
                       <p className="text-sm font-black text-gray-900 font-mono tracking-tight">{tempProfile.gstin}</p>
                     )}
@@ -450,7 +548,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Registered Email</label>
                     {isEditingProfile ? (
-                      <input type="email" value={tempProfile.email} onChange={e => setTempProfile({ ...tempProfile, email: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <input type="email" value={tempProfile.email} onChange={e => setTempProfile({ ...tempProfile, email: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" aria-label="Registered Email" />
                     ) : (
                       <p className="text-sm font-black text-gray-900">{user.email || '—'}</p>
                     )}
@@ -464,15 +562,15 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">District</label>
                     {isEditingProfile ? (
-                      <input type="text" value={tempProfile.district} onChange={e => setTempProfile({ ...tempProfile, district: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <input type="text" value={tempProfile.district} onChange={e => setTempProfile({ ...tempProfile, district: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" aria-label="District" />
                     ) : (
-                      <p className="text-sm font-black text-gray-900">{user.location?.district || '—'}</p>
+                      <p className="text-sm font-black text-gray-900">{tempProfile.district || '—'}</p>
                     )}
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">State</label>
                     {isEditingProfile ? (
-                      <input type="text" value={tempProfile.state} onChange={e => setTempProfile({ ...tempProfile, state: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <input type="text" value={tempProfile.state} onChange={e => setTempProfile({ ...tempProfile, state: e.target.value })} className="w-full p-3 bg-white rounded-xl font-bold text-gray-900 text-sm border focus:ring-2 focus:ring-blue-500 outline-none" aria-label="State" />
                     ) : (
                       <p className="text-sm font-black text-gray-900">{user.location?.state || '—'}</p>
                     )}
@@ -509,9 +607,86 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
   return (
     <div className="p-4 pt-6 w-full mx-auto min-h-screen relative">
       {activeTab === 'home' && renderSearch()}
-      {activeTab === 'orders' && renderActiveOrders()}
+      {activeTab === 'cart' && <CartView onCheckoutComplete={() => { loadCartCount(); onNavigate('orders'); }} />}
+      {activeTab === 'orders' && <OrdersView />}
       {activeTab === 'profile' && renderProfile()}
       {activeTab === 'chats' && renderNegotiations()}
+
+      {/* Quantity Selection Modal */}
+      {showQuantityModal && selectedListing && (
+        <div className="fixed inset-0 z-[100] bg-gray-900/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl animate-in zoom-in duration-300">
+            <div className="text-center mb-6">
+              <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-[24px] flex items-center justify-center text-4xl mx-auto mb-4 shadow-inner">
+                <i className="fas fa-shopping-cart"></i>
+              </div>
+              <h3 className="text-2xl font-black text-gray-900 mb-2">Add to Cart</h3>
+              <p className="text-sm text-gray-500">
+                {CROPS.find(c => c.id === selectedListing.cropId)?.name} • Grade {selectedListing.grade}
+              </p>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="text-sm font-bold text-gray-700 mb-2 block">Quantity (kg)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={quantityInput}
+                    onChange={(e) => setQuantityInput(e.target.value)}
+                    className="w-full p-4 border-2 border-gray-200 rounded-2xl font-bold text-gray-900 text-lg focus:border-blue-500 outline-none"
+                    placeholder="Enter quantity"
+                    min="1"
+                    max={selectedListing.quantity}
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-gray-400">kg</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Available: {selectedListing.quantity} kg • Price: ₹{selectedListing.expectedPrice}/kg
+                </p>
+              </div>
+
+              <div className="bg-blue-50 rounded-2xl p-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-bold text-gray-700">Total Amount</span>
+                  <span className="text-2xl font-black text-blue-600">
+                    ₹{(parseFloat(quantityInput || '0') * selectedListing.expectedPrice).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  setShowQuantityModal(false);
+                  setSelectedListing(null);
+                }}
+                className="bg-gray-100 text-gray-700 py-4 rounded-2xl font-bold hover:bg-gray-200 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddToCart}
+                disabled={addingToCart === selectedListing.id}
+                className="bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-lg hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {addingToCart === selectedListing.id ? (
+                  <>
+                    <i className="fas fa-spinner fa-spin"></i>
+                    Adding...
+                  </>
+                ) : (
+                  <>
+                    <i className="fas fa-cart-plus"></i>
+                    Add to Cart
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {ratingModalOpen && (
         <div className="fixed inset-0 z-[100] bg-gray-900/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
@@ -532,6 +707,7 @@ const BuyerDashboard: React.FC<BuyerDashboardProps> = ({
                   onMouseLeave={() => setHoverRating(0)}
                   onClick={() => setSelectedStars(star)}
                   className="text-5xl transition-all active:scale-75"
+                  aria-label={`Rate ${star} stars`}
                 >
                   <i className={`fas fa-star ${(hoverRating || selectedStars) >= star ? 'text-amber-400' : 'text-gray-100'
                     }`}></i>

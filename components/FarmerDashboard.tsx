@@ -1,8 +1,11 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { CROPS, TRANSLATIONS } from '../constants.tsx';
-import { Listing, MarketPrice, User, Language, Gender } from '../types';
+import { Listing, MarketPrice, User, Language, Gender, ListingStatus, Crop } from '../types';
 import { geminiService } from '../services/geminiService';
+import FarmerOrdersView from './FarmerOrdersView';
+import { listingAPI } from '../services/api';
+import StatusBadge from './StatusBadge';
 
 interface EnhancedMarketPrice extends MarketPrice {
   msp: number;
@@ -54,6 +57,11 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
 
   const t = (key: string) => {
     return TRANSLATIONS[language]?.[key] || TRANSLATIONS.en[key] || key;
+  };
+
+  const getAnimDelayClass = (idx: number, stepMs: number) => {
+    const ms = Math.min(1500, idx * stepMs);
+    return `anim-delay-${ms}`;
   };
 
   // Combine real accepted deals with some mock history for display
@@ -146,46 +154,21 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
     }
   };
 
+  const [availableCrops, setAvailableCrops] = useState<Crop[]>([]);
+
+  const cropsForUi = availableCrops.length > 0 ? availableCrops : CROPS;
+
   const [newListing, setNewListing] = useState({
-    cropId: '1',
+    cropId: '',
     quantity: '',
     unit: 'kg' as 'kg' | 'quintal',
     expectedPrice: '',
-    grade: 'A' as 'A' | 'B' | 'C',
+    grade: 'Premium',
     harvestDate: new Date().toISOString().split('T')[0],
     images: [] as string[]
   });
 
-  const [listings, setListings] = useState<Listing[]>([
-    {
-      id: 'demo-1',
-      farmerId: 'farmer-1',
-      cropId: '1',
-      quantity: 500,
-      unit: 'kg',
-      expectedPrice: 35,
-      mandiPrice: 24,
-      grade: 'A',
-      harvestDate: '2023-11-05',
-      images: ['https://images.unsplash.com/photo-1592924357228-91a4daadcfea?auto=format&fit=crop&q=80&w=400'],
-      status: 'AVAILABLE',
-      location: 'Guntur, AP'
-    },
-    {
-      id: 'demo-2',
-      farmerId: 'farmer-1',
-      cropId: '2',
-      quantity: 2000,
-      unit: 'kg',
-      expectedPrice: 24,
-      mandiPrice: 22,
-      grade: 'A',
-      harvestDate: '2023-11-12',
-      images: ['https://images.unsplash.com/photo-1501430654243-c934cec2e1c0?auto=format&fit=crop&q=80&w=400'],
-      status: 'AVAILABLE',
-      location: 'Guntur, AP'
-    }
-  ]);
+  const [listings, setListings] = useState<Listing[]>([]);
 
   const [marketPrices, setMarketPrices] = useState<EnhancedMarketPrice[]>([]);
   const [loadingPrices, setLoadingPrices] = useState(false);
@@ -197,6 +180,37 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
   useEffect(() => {
     fetchPrices();
   }, []);
+
+  const loadCrops = async () => {
+    try {
+      const res = await listingAPI.getCrops();
+      const crops = res.crops || [];
+      setAvailableCrops(crops);
+      if (crops.length > 0) {
+        setNewListing(prev => ({ ...prev, cropId: prev.cropId || crops[0].id }));
+      }
+    } catch (e) {
+    }
+  };
+
+  const loadMyListings = async () => {
+    try {
+      const res = await listingAPI.getMyListings();
+      setListings(res.listings || []);
+    } catch (e) {
+    }
+  };
+
+  useEffect(() => {
+    loadCrops();
+    loadMyListings();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'listings') {
+      loadMyListings();
+    }
+  }, [activeTab]);
 
   const fetchPrices = async () => {
     setLoadingPrices(true);
@@ -219,7 +233,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
     }
   };
 
-  const handlePublish = () => {
+  const handlePublish = async () => {
     const listingData = {
       cropId: newListing.cropId,
       quantity: Number(newListing.quantity),
@@ -228,29 +242,41 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
       grade: newListing.grade,
       harvestDate: newListing.harvestDate,
       images: newListing.images.length > 0 ? newListing.images : ['https://images.unsplash.com/photo-1592924357228-91a4daadcfea?auto=format&fit=crop&q=80&w=400'],
-      status: 'AVAILABLE' as const,
-      location: `${user.location?.village}, ${user.location?.district}`
+      location: user.location ? `${user.location.village}, ${user.location.district}` : 'India'
     };
 
-    const cropName = CROPS.find(c => c.id === listingData.cropId)?.name;
+    const cropName = cropsForUi.find(c => c.id === listingData.cropId)?.name || listingData.cropId;
 
-    if (editListingId) {
-      setListings(prev => prev.map(l => l.id === editListingId ? { ...l, ...listingData } : l));
-      geminiService.speak(`${cropName} listing updated successfully!`);
-    } else {
-      const listing: Listing = {
-        id: Math.random().toString(36).substr(2, 9),
-        farmerId: 'farmer-1',
-        ...listingData,
-        mandiPrice: marketPrices.find(m => m.cropId === newListing.cropId)?.avg || 24
-      };
-      setListings([listing, ...listings]);
-      geminiService.speak(`Great! Your ${listingData.quantity} ${listingData.unit} of ${cropName} is now listed for ${listingData.expectedPrice} rupees per kg.`);
+    try {
+      if (!listingData.cropId || listingData.cropId.length < 8) {
+        throw new Error('Crop list not loaded. Please refresh and try again.');
+      }
+      if (editListingId) {
+        await listingAPI.update(editListingId, listingData);
+        geminiService.speak(`${cropName} listing updated successfully!`);
+      } else {
+        await listingAPI.create(listingData);
+        geminiService.speak(`Great! Your ${listingData.quantity} ${listingData.unit} of ${cropName} is now listed for ${listingData.expectedPrice} rupees per kg.`);
+      }
+      await loadMyListings();
+    } catch (e: any) {
+      const message = e?.message || 'Failed to publish listing.';
+      alert(message);
+      geminiService.speak(message);
+      return;
     }
 
     setInternalView('default');
     setEditListingId(null);
-    setNewListing({ cropId: '1', quantity: '', unit: 'kg', expectedPrice: '', grade: 'A', harvestDate: new Date().toISOString().split('T')[0], images: [] });
+    setNewListing(prev => ({
+      cropId: cropsForUi[0]?.id || prev.cropId,
+      quantity: '',
+      unit: 'kg',
+      expectedPrice: '',
+      grade: 'Premium',
+      harvestDate: new Date().toISOString().split('T')[0],
+      images: []
+    }));
   };
 
   const getPriceCompetitiveness = (expected: number, cropId: string, listingMandiPrice?: number) => {
@@ -328,7 +354,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
       unit: l.unit,
       expectedPrice: String(l.expectedPrice),
       grade: l.grade,
-      harvestDate: l.harvestDate,
+      harvestDate: String(l.harvestDate).includes('T') ? String(l.harvestDate).slice(0, 10) : String(l.harvestDate),
       images: l.images
     });
     setInternalView('add');
@@ -364,17 +390,24 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
         processedCount++;
 
         if (processedCount === validFiles.length) {
-          setNewListing(prev => ({
-            ...prev,
-            images: [...prev.images, ...uploadedImages]
-          }));
+          let nextImages: string[] = [];
+          setNewListing(prev => {
+            nextImages = [...prev.images, ...uploadedImages];
+            return {
+              ...prev,
+              images: nextImages
+            };
+          });
 
-          setTimeout(() => {
-            setIsAnalyzingPhoto(false);
-            const suggestedGrade = Math.random() > 0.6 ? 'A' : Math.random() > 0.3 ? 'B' : 'C';
-            setNewListing(prev => ({ ...prev, grade: suggestedGrade as any }));
-            geminiService.speak(`AI analysis complete. Based on visual consistency, I've marked this as Grade ${suggestedGrade}.`);
-          }, 1500);
+          setTimeout(async () => {
+            try {
+              const suggestedGrade = await geminiService.getQualityGradeFromImages(nextImages);
+              setNewListing(prev => ({ ...prev, grade: suggestedGrade }));
+              geminiService.speak(`AI analysis complete. Based on the photos, I've marked this as Grade ${suggestedGrade}.`);
+            } finally {
+              setIsAnalyzingPhoto(false);
+            }
+          }, 300);
         }
       };
       reader.readAsDataURL(file as Blob);
@@ -470,7 +503,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
           incomingOffers.map((offer, idx) => {
             const crop = CROPS.find(c => c.name === offer.crop);
             return (
-              <div key={offer.id} className="bg-white rounded-[40px] shadow-sm border border-gray-100 overflow-hidden hover:shadow-xl hover:border-blue-100 transition-all group animate-in slide-in-from-bottom duration-500" style={{ animationDelay: `${idx * 150}ms` }}>
+              <div key={offer.id} className={`bg-white rounded-[40px] shadow-sm border border-gray-100 overflow-hidden hover:shadow-xl hover:border-blue-100 transition-all group animate-in slide-in-from-bottom duration-500 ${getAnimDelayClass(idx, 150)}`}>
                 <div className="p-8">
                   <div className="flex justify-between items-start mb-6">
                     <div className="flex items-center gap-5">
@@ -531,6 +564,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
         <button
           onClick={() => setInternalView('default')}
           className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400"
+          aria-label="Back"
         >
           <i className="fas fa-chevron-left"></i>
         </button>
@@ -597,6 +631,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
                 value={tempProfile.village}
                 onChange={(e) => setTempProfile(prev => ({ ...prev, village: e.target.value }))}
                 className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+                aria-label="Village"
               />
             </div>
             <div className="space-y-2">
@@ -606,6 +641,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
                 value={tempProfile.district}
                 onChange={(e) => setTempProfile(prev => ({ ...prev, district: e.target.value }))}
                 className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+                aria-label="District"
               />
             </div>
           </div>
@@ -616,6 +652,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
               value={tempProfile.state}
               onChange={(e) => setTempProfile(prev => ({ ...prev, state: e.target.value }))}
               className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+              aria-label="State"
             />
           </div>
         </div>
@@ -633,7 +670,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
   const renderAddEditListing = () => (
     <div className="space-y-6 pb-20 animate-in fade-in duration-500">
       <div className="flex items-center gap-4 mb-2">
-        <button onClick={() => { setInternalView('default'); setEditListingId(null); }} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400">
+        <button onClick={() => { setInternalView('default'); setEditListingId(null); }} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400" aria-label="Back">
           <i className="fas fa-chevron-left"></i>
         </button>
         <h2 className="font-black text-2xl tracking-tight">{editListingId ? t('edit') : t('add_crop')}</h2>
@@ -644,7 +681,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
         <div className="space-y-3">
           <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Select Harvest Type</label>
           <div className="grid grid-cols-3 gap-2">
-            {CROPS.map(crop => (
+            {cropsForUi.map(crop => (
               <button
                 key={crop.id}
                 onClick={() => setNewListing(prev => ({ ...prev, cropId: crop.id }))}
@@ -699,6 +736,8 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
               accept="image/*"
               className="hidden"
               onChange={handleImageUpload}
+              aria-label="Upload harvest photos"
+              title="Upload harvest photos"
             />
 
             {/* Preview List */}
@@ -718,6 +757,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
                 <button
                   onClick={(e) => { e.stopPropagation(); removeImage(idx); }}
                   className="absolute top-2 right-2 w-8 h-8 bg-black/40 backdrop-blur-md text-white rounded-xl flex items-center justify-center text-[10px] shadow-lg border border-white/20 active:scale-75 transition-all hover:bg-red-500"
+                  aria-label="Remove photo"
                 >
                   <i className="fas fa-trash-can"></i>
                 </button>
@@ -787,36 +827,34 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
           </div>
         </div>
 
+        {/* Harvest Date */}
+        <div className="space-y-2">
+          <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Harvest Date</label>
+          <div className="relative">
+            <i className="fas fa-calendar-days absolute left-5 top-1/2 -translate-y-1/2 text-gray-300"></i>
+            <input
+              type="date"
+              value={newListing.harvestDate}
+              onChange={(e) => setNewListing(prev => ({ ...prev, harvestDate: e.target.value }))}
+              className="w-full bg-gray-50 border-0 p-5 pl-14 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none"
+              aria-label="Harvest date"
+            />
+          </div>
+        </div>
+
 
         {/* Quality Grade Selector */}
         <div className="space-y-3">
           <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Quality Grade</label>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {[
-              { value: 'Premium', icon: '⭐', color: 'green', desc: 'No defects' },
-              { value: 'Good', icon: '✓', color: 'blue', desc: 'Minor defects' },
-              { value: 'Average', icon: '○', color: 'yellow', desc: 'Some defects' },
-              { value: 'Fair', icon: '△', color: 'orange', desc: 'Visible defects' }
-            ].map(({ value, icon, color, desc }) => (
-              <button
-                key={value}
-                onClick={() => setNewListing(prev => ({ ...prev, grade: value as any }))}
-                className={`p-4 rounded-2xl border-2 transition-all ${newListing.grade === value
-                    ? `border-${color}-600 bg-${color}-50 shadow-md shadow-${color}-100`
-                    : 'border-gray-100 bg-gray-50'
-                  }`}
-              >
-                <div className={`text-2xl mb-2 ${newListing.grade === value ? `text-${color}-600` : 'text-gray-300'}`}>
-                  {icon}
-                </div>
-                <div className={`text-[11px] font-black mb-1 ${newListing.grade === value ? `text-${color}-700` : 'text-gray-600'}`}>
-                  {value}
-                </div>
-                <div className={`text-[7px] font-bold uppercase tracking-widest ${newListing.grade === value ? `text-${color}-600` : 'text-gray-400'}`}>
-                  {desc}
-                </div>
-              </button>
-            ))}
+          <div className="bg-gray-50 border border-gray-100 rounded-3xl p-5 flex items-center justify-between">
+            <div>
+              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">AI Decided</p>
+              <p className="text-xl font-black text-gray-900 mt-1">{newListing.grade}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Based on photos</p>
+              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mt-1">Not editable</p>
+            </div>
           </div>
           <div className="bg-blue-50/50 p-4 rounded-3xl border border-blue-100 flex items-start gap-3">
             <i className="fas fa-info-circle text-blue-400 mt-1"></i>
@@ -844,6 +882,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
             <button
               onClick={() => setPreviewImageUrl(null)}
               className="w-12 h-12 rounded-full bg-white/10 text-white flex items-center justify-center text-xl hover:bg-white/20 active:scale-90 transition-all"
+              aria-label="Close preview"
             >
               <i className="fas fa-times"></i>
             </button>
@@ -1046,7 +1085,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
 
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {soldHistory.map((item, idx) => (
-            <div key={item.id} className="bg-white rounded-[32px] p-1 border border-gray-100 shadow-sm transition-all hover:shadow-xl hover:border-green-100 group animate-in slide-in-from-bottom duration-500" style={{ animationDelay: `${idx * 150}ms` }}>
+            <div key={item.id} className={`bg-white rounded-[32px] p-1 border border-gray-100 shadow-sm transition-all hover:shadow-xl hover:border-green-100 group animate-in slide-in-from-bottom duration-500 ${getAnimDelayClass(idx, 150)}`}>
               <div className="p-6">
                 <div className="flex justify-between items-start mb-6">
                   <div className="flex items-center gap-4">
@@ -1132,6 +1171,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
   return (
     <div className="p-4 pt-6 w-full mx-auto pb-24 md:pb-8 h-full relative">
       {(activeTab === 'home' || !activeTab) && renderHome()}
+      {activeTab === 'orders' && <FarmerOrdersView />}
       {activeTab === 'earnings' && renderEarnings()}
       {activeTab === 'chats' && renderOffers()}
       {activeTab === 'listings' && (
@@ -1139,7 +1179,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
           <div className="flex justify-between items-center px-1 mb-6">
             <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">{t('my_listings')}</h3>
             <button
-              onClick={() => { setInternalView('add'); setEditListingId(null); setNewListing({ cropId: '1', quantity: '', unit: 'kg', expectedPrice: '', grade: 'A', harvestDate: new Date().toISOString().split('T')[0], images: [] }); }}
+              onClick={() => { setInternalView('add'); setEditListingId(null); setNewListing({ cropId: '1', quantity: '', unit: 'kg', expectedPrice: '', grade: 'Premium', harvestDate: new Date().toISOString().split('T')[0], images: [] }); }}
               className="bg-black text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all"
             >
               <i className="fas fa-plus mr-2"></i> {t('add_listing')}
@@ -1187,8 +1227,11 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
                       <div className="flex-grow min-w-0">
                         <div className="flex justify-between items-start">
                           <div>
-                            <h4 className="font-black text-xl text-gray-900 leading-none mb-1">{CROPS.find(c => c.id === l.cropId)?.name}</h4>
+                            <h4 className="font-black text-xl text-gray-900 leading-none mb-1">{l.crop?.name || cropsForUi.find(c => c.id === l.cropId)?.name}</h4>
                             <p className="text-[9px] text-gray-400 font-black uppercase tracking-[0.1em]">{l.quantity} {l.unit} • ₹{l.expectedPrice}/kg</p>
+                          </div>
+                          <div className="shrink-0">
+                            <StatusBadge status={l.status} type="listing" />
                           </div>
                         </div>
 
@@ -1225,7 +1268,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
 
                     <div className="mt-4 flex gap-2">
                       <button
-                        onClick={() => { setEditListingId(l.id); setInternalView('add'); }}
+                        onClick={() => handleEditClick(l)}
                         className="flex-1 bg-gray-50 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-gray-600 hover:bg-gray-100 transition-colors"
                       >
                         <i className="fas fa-pen mr-2"></i> Edit
