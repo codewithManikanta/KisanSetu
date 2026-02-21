@@ -70,7 +70,7 @@ const OTPModal: React.FC<OTPModalProps> = ({
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-br from-[#f8f9fa]/95 via-white/85 to-[#e9ecef]/95 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl p-8 max-w-md w-full mx-4 shadow-2xl animate-in slide-in-from-bottom duration-300">
                 {/* Header */}
                 <div className="text-center mb-6">

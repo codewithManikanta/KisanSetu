@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useRoleTranslate } from '../hooks/useRoleTranslate';
+import LocationPicker from '../components/LocationPicker';
+import ModernDropdown from '../components/common/ModernDropdown';
 
 const SignupBuyer = () => {
+    const { t } = useRoleTranslate();
+    const rawBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+    const apiBase = rawBaseUrl.endsWith('/api') ? rawBaseUrl : `${rawBaseUrl.replace(/\/+$/, '')}/api`;
     const navigate = useNavigate();
     const { login } = useAuth();
     const [loading, setLoading] = useState(false);
@@ -15,8 +21,14 @@ const SignupBuyer = () => {
         fullName: '',
         gender: 'Male',
         phone: '',
+        address: '',
         city: '',
+        mandal: '',
+        district: '',
         state: '',
+        pincode: '',
+        latitude: null as number | null,
+        longitude: null as number | null,
         language: 'ENGLISH',
     });
 
@@ -29,14 +41,14 @@ const SignupBuyer = () => {
         setError('');
 
         if (formData.password !== formData.confirmPassword) {
-            setError('Passwords do not match');
+            setError(t('common.passwords_not_match'));
             return;
         }
 
         setLoading(true);
 
         try {
-            const response = await fetch('http://localhost:5000/api/auth/signup', {
+            const response = await fetch(`${apiBase}/auth/signup`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -47,10 +59,16 @@ const SignupBuyer = () => {
                         fullName: formData.fullName,
                         gender: formData.gender,
                         phone: formData.phone,
+                        address: formData.address,
                         city: formData.city,
+                        mandal: formData.mandal,
+                        district: formData.district,
                         state: formData.state,
-                        language: formData.language,
-                    },
+                        pincode: formData.pincode,
+                        latitude: formData.latitude,
+                        longitude: formData.longitude,
+                        language: formData.language
+                    }
                 }),
             });
 
@@ -71,53 +89,288 @@ const SignupBuyer = () => {
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
-            <div className="max-w-md w-full space-y-8 bg-white p-8 rounded-xl shadow-md">
-                <div>
-                    <h2 className="text-center text-3xl font-extrabold text-gray-900">Buyer Registration</h2>
-                    <p className="mt-2 text-center text-sm text-gray-600">
-                        Join as a Buyer to purchase fresh produce.
-                    </p>
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-sky-50 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
+            {/* Animated Background Blobs */}
+            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                <div className="absolute top-0 -left-4 w-72 h-72 bg-blue-300 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-blob"></div>
+                <div className="absolute top-0 -right-4 w-72 h-72 bg-cyan-300 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-blob animation-delay-2000"></div>
+                <div className="absolute -bottom-8 left-20 w-72 h-72 bg-sky-300 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-blob animation-delay-4000"></div>
+            </div>
+
+            {/* Signup Card */}
+            <div className="max-w-2xl w-full space-y-8 bg-white/80 backdrop-blur-xl p-8 sm:p-10 rounded-3xl shadow-2xl border border-white/20 relative z-10 animate-fadeInUp">
+                {/* Header */}
+                <div className="text-center animate-scaleIn anim-delay-200">
+                    <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-cyan-600 shadow-lg mb-4 animate-float">
+                        <span className="text-4xl">🛒</span>
+                    </div>
+                    <h2 className="text-3xl sm:text-4xl font-extrabold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+                        {t('buyer.create_buyer_account')}
+                    </h2>
+                    <p className="mt-2 text-sm text-gray-600">{t('buyer.source_fresh_produce')}</p>
                 </div>
 
-                <form className="mt-8 space-y-4" onSubmit={handleSubmit}>
-                    {error && <div className="text-red-600 text-sm text-center">{error}</div>}
+                <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+                    {/* Error Message */}
+                    {error && (
+                        <div className="bg-red-50 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg animate-shake" role="alert">
+                            <div className="flex items-center">
+                                <span className="text-xl mr-2">⚠️</span>
+                                <span className="font-medium">{error}</span>
+                            </div>
+                        </div>
+                    )}
 
-                    <div className="grid grid-cols-1 gap-4">
-                        <input name="fullName" type="text" placeholder="Full Name / Business Name" autoComplete="name" required className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange} />
-
-                        <select name="gender" autoComplete="sex" className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange}>
-                            <option value="Male">Male</option>
-                            <option value="Female">Female</option>
-                            <option value="Other">Other</option>
-                        </select>
-
-                        <input name="email" type="email" placeholder="Email Address" autoComplete="email" required className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange} />
-
-                        <input name="phone" type="tel" placeholder="Phone Number (Optional)" autoComplete="tel" className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange} />
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <input name="password" type="password" placeholder="Password" autoComplete="new-password" required className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange} />
-                            <input name="confirmPassword" type="password" placeholder="Confirm Password" autoComplete="new-password" required className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange} />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* Full Name */}
+                        <div className="md:col-span-2 animate-slideInRight anim-delay-300">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Full Name / Business Name</label>
+                            <input
+                                name="fullName"
+                                type="text"
+                                placeholder="Enter your full name or business name"
+                                autoComplete="name"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
-                            <input name="city" type="text" placeholder="City" autoComplete="address-level2" required className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange} />
-                            <input name="state" type="text" placeholder="State" autoComplete="address-level1" required className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange} />
+                        {/* Gender */}
+                        <div className="animate-slideInRight anim-delay-350 relative z-50">
+                            <ModernDropdown
+                                label="Gender"
+                                value={formData.gender}
+                                options={[
+                                    { value: 'Male', label: 'Male', icon: 'fas fa-male' },
+                                    { value: 'Female', label: 'Female', icon: 'fas fa-female' },
+                                    { value: 'Other', label: 'Other', icon: 'fas fa-genderless' }
+                                ]}
+                                onChange={(value) => setFormData({ ...formData, gender: value })}
+                                placeholder="Select Gender"
+                            />
                         </div>
 
-                        <select name="language" autoComplete="language" className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" onChange={handleChange}>
-                            <option value="ENGLISH">English</option>
-                            <option value="HINDI">Hindi</option>
-                            <option value="TELUGU">Telugu</option>
-                            <option value="TAMIL">Tamil</option>
-                            <option value="KANNADA">Kannada</option>
-                        </select>
+                        {/* Phone */}
+                        <div className="animate-slideInRight anim-delay-400">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Phone Number</label>
+                            <input
+                                name="phone"
+                                type="tel"
+                                placeholder="Enter phone number"
+                                autoComplete="tel"
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        {/* Email */}
+                        <div className="md:col-span-2 animate-slideInRight anim-delay-450">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Email Address</label>
+                            <input
+                                name="email"
+                                type="email"
+                                placeholder="your@email.com"
+                                autoComplete="email"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        {/* Password */}
+                        <div className="animate-slideInRight anim-delay-500">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Password</label>
+                            <input
+                                name="password"
+                                type="password"
+                                placeholder="••••••••"
+                                autoComplete="new-password"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        {/* Confirm Password */}
+                        <div className="animate-slideInRight anim-delay-550">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Confirm Password</label>
+                            <input
+                                name="confirmPassword"
+                                type="password"
+                                placeholder="••••••••"
+                                autoComplete="new-password"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        {/* Location Picker */}
+                        <div className="md:col-span-2 animate-slideInRight anim-delay-600">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Location Detection</label>
+                            <div className="bg-white/50 backdrop-blur-sm rounded-xl overflow-hidden border border-gray-300">
+                                <LocationPicker
+                                    value={{
+                                        latitude: formData.latitude,
+                                        longitude: formData.longitude,
+                                        fullAddress: formData.address,
+                                        city: formData.city,
+                                        mandal: formData.mandal,
+                                        district: formData.district,
+                                        state: formData.state,
+                                        pincode: formData.pincode
+                                    }}
+                                    onChange={(loc) => {
+                                        setFormData(prev => ({
+                                            ...prev,
+                                            address: loc.fullAddress || '',
+                                            city: loc.city || loc.town || loc.village || '',
+                                            mandal: (loc as any).mandal || '',
+                                            district: loc.district || '',
+                                            state: loc.state || '',
+                                            pincode: loc.pincode || '',
+                                            latitude: loc.latitude,
+                                            longitude: loc.longitude
+                                        }));
+                                    }}
+                                    hideMap={true}
+                                    pickupLocation={undefined}
+                                />
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1 ml-1">Auto-detecting your location...</p>
+                        </div>
+
+                        {/* Location Details */}
+                        {/* Location Details - Visible and Auto-filled */}
+                        <div className="md:col-span-2 animate-slideInRight anim-delay-550">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Street Address / House Name</label>
+                            <input
+                                name="address"
+                                type="text"
+                                value={formData.address}
+                                placeholder="Auto-detected address"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        <div className="animate-slideInRight anim-delay-650">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">City</label>
+                            <input
+                                name="city"
+                                type="text"
+                                value={formData.city}
+                                placeholder="Auto-detected city"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        <div className="animate-slideInRight anim-delay-650">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Mandal/Tehsil</label>
+                            <input
+                                name="mandal"
+                                type="text"
+                                value={formData.mandal}
+                                placeholder="Auto-detected mandal"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        <div className="animate-slideInRight anim-delay-650">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">District</label>
+                            <input
+                                name="district"
+                                type="text"
+                                value={formData.district}
+                                placeholder="Auto-detected district"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        <div className="animate-slideInRight anim-delay-700">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">State</label>
+                            <input
+                                name="state"
+                                type="text"
+                                value={formData.state}
+                                placeholder="Auto-detected state"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        <div className="animate-slideInRight anim-delay-700">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Pincode</label>
+                            <input
+                                name="pincode"
+                                type="text"
+                                value={formData.pincode}
+                                placeholder="Auto-detected pincode"
+                                required
+                                className="appearance-none relative block w-full px-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 hover:border-blue-400 bg-white/50 backdrop-blur-sm"
+                                onChange={handleChange}
+                            />
+                        </div>
+
+                        {/* Language */}
+                        <div className="md:col-span-2 animate-slideInRight anim-delay-700 relative">
+                            <ModernDropdown
+                                label="Preferred Language"
+                                value={formData.language}
+                                options={[
+                                    { value: 'ENGLISH', label: 'English', icon: 'fas fa-language' },
+                                    { value: 'HINDI', label: 'Hindi', icon: 'fas fa-language' },
+                                    { value: 'TELUGU', label: 'Telugu', icon: 'fas fa-language' },
+                                    { value: 'TAMIL', label: 'Tamil', icon: 'fas fa-language' },
+                                    { value: 'KANNADA', label: 'Kannada', icon: 'fas fa-language' }
+                                ]}
+                                onChange={(value) => setFormData({ ...formData, language: value })}
+                                placeholder="Select Language"
+                                direction="top"
+                            />
+                        </div>
                     </div>
 
-                    <button type="submit" disabled={loading} className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                        {loading ? 'Registering...' : 'Register'}
-                    </button>
+                    {/* Submit Button */}
+                    <div className="animate-slideInUp anim-delay-750">
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className="group relative w-full flex justify-center py-3.5 px-4 border border-transparent text-sm font-bold rounded-xl text-white bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-[1.02] hover:shadow-xl active:scale-[0.98]"
+                        >
+                            {loading ? (
+                                <div className="flex items-center gap-2">
+                                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                    <span>Registering...</span>
+                                </div>
+                            ) : (
+                                <span className="flex items-center gap-2">
+                                    <span>Create Account</span>
+                                    <span className="transform group-hover:translate-x-1 transition-transform duration-300">→</span>
+                                </span>
+                            )}
+                        </button>
+                    </div>
+
+                    {/* Login Link */}
+                    <div className="text-center text-sm animate-fadeIn anim-delay-800">
+                        <span className="text-gray-600">Already have an account? </span>
+                        <Link
+                            to="/login"
+                            className="font-semibold text-blue-600 hover:text-blue-700 transition-colors duration-300 hover:underline"
+                        >
+                            Login here
+                        </Link>
+                    </div>
                 </form>
             </div>
         </div>

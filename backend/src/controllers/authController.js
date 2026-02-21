@@ -26,7 +26,9 @@ const mapProfile = (user, profile) => {
         email: user.email,
         role: user.role,
         status: user.status,
+        profilePhoto: user.profilePhoto,
         language: langMap[profile?.language] || 'en',
+        fullProfile: profile, // Include the raw profile object for frontend access
     };
 
     if (user.role === 'FARMER' && profile) {
@@ -38,6 +40,9 @@ const mapProfile = (user, profile) => {
                 village: profile.village,
                 district: profile.district,
                 state: profile.state,
+                address: profile.address,
+                latitude: profile.latitude,
+                longitude: profile.longitude,
             }
         };
     } else if (user.role === 'BUYER' && profile) {
@@ -49,6 +54,9 @@ const mapProfile = (user, profile) => {
                 village: '',
                 district: profile.city,
                 state: profile.state,
+                address: profile.address,
+                latitude: profile.latitude,
+                longitude: profile.longitude,
             }
         };
     } else if (user.role === 'TRANSPORTER' && profile) {
@@ -56,6 +64,18 @@ const mapProfile = (user, profile) => {
             ...base,
             name: profile.fullName,
             phone: profile.phone,
+            location: {
+                address: profile.address,
+                city: profile.city,
+                state: profile.state,
+                pincode: profile.pincode,
+            },
+            fleet: {
+                vehicleType: profile.vehicleType,
+                vehicleNumber: profile.vehicleNumber,
+                capacity: profile.capacity,
+                pricePerKm: profile.pricePerKm,
+            }
         };
     }
 
@@ -118,6 +138,7 @@ const signup = async (req, res) => {
 
 // Login Controller
 const login = async (req, res) => {
+    console.log('Login Request Body:', req.body);
     const { email, password, role } = req.body;
 
     if (!email || !password || !role) {
@@ -189,4 +210,109 @@ const getMe = async (req, res) => {
     }
 };
 
-module.exports = { signup, login, getMe };
+// Update Profile
+const updateProfile = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const role = req.user.role;
+        const updates = req.body;
+
+        const user = await prisma.user.update({
+            where: { id: userId },
+            data: {
+                ...(updates.profilePhoto !== undefined && { profilePhoto: updates.profilePhoto }), // Update profile photo if provided (allow null/empty)
+            },
+            include: {
+                farmerProfile: true,
+                buyerProfile: true,
+                transporterProfile: true,
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        let updatedProfile = null;
+
+        if (role === 'FARMER') {
+            updatedProfile = await prisma.farmerProfile.update({
+                where: { userId },
+                data: {
+                    fullName: updates.name,
+                    phone: updates.phone,
+                    village: updates.location?.village,
+                    district: updates.location?.district,
+                    state: updates.location?.state,
+                    address: updates.location?.address,
+                    latitude: updates.location?.latitude,
+                    longitude: updates.location?.longitude,
+                }
+            });
+        } else if (role === 'BUYER') {
+            updatedProfile = await prisma.buyerProfile.update({
+                where: { userId },
+                data: {
+                    fullName: updates.name,
+                    phone: updates.phone,
+                    city: updates.location?.district, // Mapping district to city for buyer
+                    state: updates.location?.state,
+                    address: updates.location?.address,
+                    latitude: updates.location?.latitude,
+                    longitude: updates.location?.longitude,
+                }
+            });
+        } else if (role === 'TRANSPORTER') {
+            const dataToUpdate = {
+                fullName: updates.name,
+                phone: updates.phone,
+                address: updates.location?.address,
+                city: updates.location?.city,
+                state: updates.location?.state,
+                pincode: updates.location?.pincode,
+                latitude: updates.location?.latitude,
+                longitude: updates.location?.longitude,
+            };
+
+            // Fleet/Vehicle details update
+            if (updates.fleet) {
+                if (updates.fleet.vehicleType) dataToUpdate.vehicleType = updates.fleet.vehicleType;
+                if (updates.fleet.vehicleNumber) dataToUpdate.vehicleNumber = updates.fleet.vehicleNumber;
+                if (updates.fleet.capacity !== undefined) dataToUpdate.capacity = parseFloat(updates.fleet.capacity);
+                if (updates.fleet.pricePerKm !== undefined) dataToUpdate.pricePerKm = parseFloat(updates.fleet.pricePerKm);
+            }
+
+            // Handle serviceRange update if present
+            if (updates.serviceRange !== undefined) {
+                dataToUpdate.serviceRange = parseFloat(updates.serviceRange);
+            }
+
+            updatedProfile = await prisma.transporterProfile.update({
+                where: { userId },
+                data: dataToUpdate
+            });
+        }
+
+        const fullUser = await prisma.user.findUnique({
+            where: { id: userId },
+            include: {
+                farmerProfile: true,
+                buyerProfile: true,
+                transporterProfile: true,
+            }
+        });
+
+        const profile = fullUser.farmerProfile || fullUser.buyerProfile || fullUser.transporterProfile;
+
+        res.json({
+            message: 'Profile updated successfully',
+            user: mapProfile(fullUser, profile)
+        });
+
+    } catch (error) {
+        console.error('Update profile error:', error);
+        res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+};
+
+module.exports = { signup, login, getMe, updateProfile };

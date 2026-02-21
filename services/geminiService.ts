@@ -1,44 +1,6 @@
 
-import { GoogleGenAI, Type, Modality } from "@google/genai";
+import { aiAPI } from "./api";
 
-/**
- * Manual implementation of base64 decoding to avoid external dependencies as per guidelines.
- */
-function decode(base64: string) {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
-/**
- * Standard audio decoding helper for raw PCM data returned by Gemini TTS.
- */
-async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
-): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
-  const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-    }
-  }
-  return buffer;
-}
-
-/**
- * Fallback to browser-native SpeechSynthesis if Gemini TTS is unavailable or quota is exceeded.
- */
 const fallbackSpeak = (text: string) => {
   if ('speechSynthesis' in window) {
     const utterance = new SpeechSynthesisUtterance(text);
@@ -46,7 +8,7 @@ const fallbackSpeak = (text: string) => {
     const voices = window.speechSynthesis.getVoices();
     const preferredVoice = voices.find(v => v.lang.includes('en-IN') || v.lang.includes('hi-IN'));
     if (preferredVoice) utterance.voice = preferredVoice;
-    
+
     utterance.rate = 0.9; // Slightly slower for better clarity for rural users
     utterance.pitch = 1.0;
     window.speechSynthesis.speak(utterance);
@@ -55,94 +17,25 @@ const fallbackSpeak = (text: string) => {
   }
 };
 
-const hasValidKey = () => {
-  const key = process.env.API_KEY;
-  return key && key.length > 0 && key !== 'undefined' && key !== 'null';
-};
-
-let geminiDisabled = false;
-
-const shouldDisableGemini = (error: any) => {
-  const details = error?.error?.details;
-  if (Array.isArray(details) && details.some((d: any) => d?.reason === 'API_KEY_INVALID')) return true;
-  const message = String(error?.error?.message || error?.message || '');
-  if (message.toLowerCase().includes('api key not valid')) return true;
-  return false;
-};
-
 export const geminiService = {
   /**
    * Translates text to target language with retry logic for 429s
    */
   async translate(text: string, targetLang: string, retries = 2): Promise<string> {
-    if (!hasValidKey()) {
-      console.warn("Gemini API key missing, skipping translation.");
-      return text;
-    }
-    if (geminiDisabled) return text;
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Translate the following text into ${targetLang}. Only return the translation. Text: "${text}"`,
-      });
-      return response.text?.trim() || text;
-    } catch (error: any) {
-      if (retries > 0 && error?.status === 429) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return this.translate(text, targetLang, retries - 1);
-      }
-      if (shouldDisableGemini(error)) {
-        geminiDisabled = true;
-        return text;
-      }
-      console.error("Translation error", error);
-      return text;
-    }
+    return text;
   },
 
   /**
    * Fetches real-time market prices for a crop in a location
    */
   async getMarketPrice(crop: string, location: string, retries = 1) {
-    if (!hasValidKey()) {
-      console.warn("Gemini API key missing, returning null for market price.");
-      return null;
-    }
-    if (geminiDisabled) return null;
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Fetch current market price (mandi bhav) for ${crop} in ${location}. Return as JSON.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              crop: { type: Type.STRING },
-              location: { type: Type.STRING },
-              minPrice: { type: Type.NUMBER, description: 'Min price per quintal' },
-              maxPrice: { type: Type.NUMBER },
-              avgPrice: { type: Type.NUMBER },
-              unit: { type: Type.STRING, description: 'per quintal or per kg' },
-              date: { type: Type.STRING }
-            },
-            required: ['avgPrice', 'minPrice', 'maxPrice']
-          }
-        }
-      });
-      return JSON.parse(response.text || '{}');
+      return await aiAPI.getMarketPrice(crop, location);
     } catch (error: any) {
       if (retries > 0 && error?.status === 429) {
         await new Promise(resolve => setTimeout(resolve, 1500));
         return this.getMarketPrice(crop, location, retries - 1);
       }
-      if (shouldDisableGemini(error)) {
-        geminiDisabled = true;
-        return null;
-      }
-      console.error("Price extraction error", error);
       return null;
     }
   },
@@ -151,63 +44,10 @@ export const geminiService = {
    * Gets AI crop recommendations based on location and seasonal demand with 429 retry logic
    */
   async getCropRecommendations(location: string, retries = 1) {
-    if (!hasValidKey()) {
-      console.warn("Gemini API key missing, returning default recommendations.");
-      return [
-        { cropName: "Tomato", reason: "Shortage in nearby Mandis due to seasonal shift", demand: "High", trend: "Rising" },
-        { cropName: "Onion", reason: "End of season storage depletion reported locally", demand: "High", trend: "Stable" },
-        { cropName: "Wheat", reason: "Stable procurement rates at local mandis", demand: "Medium", trend: "Stable" }
-      ];
-    }
-    if (geminiDisabled) {
-      return [
-        { cropName: "Tomato", reason: "Shortage in nearby Mandis due to seasonal shift", demand: "High", trend: "Rising" },
-        { cropName: "Onion", reason: "End of season storage depletion reported locally", demand: "High", trend: "Stable" },
-        { cropName: "Wheat", reason: "Stable procurement rates at local mandis", demand: "Medium", trend: "Stable" }
-      ];
-    }
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Based on current market trends and agricultural season in ${location}, suggest 3 crops that farmers should list now for best prices. Include crop name, reason, and estimated demand level (High/Medium). Return as JSON array.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                cropName: { type: Type.STRING },
-                reason: { type: Type.STRING },
-                demand: { type: Type.STRING },
-                trend: { type: Type.STRING, description: 'Rising, Stable, or Peak' }
-              },
-              required: ['cropName', 'reason', 'demand']
-            }
-          }
-        }
-      });
-      return JSON.parse(response.text || '[]');
+      const res = await aiAPI.getRecommendations(location);
+      return res.recommendations || [];
     } catch (error: any) {
-      // Check for 429 (Resource Exhausted/Rate Limit)
-      const isRateLimit = error?.status === 429 || (error?.message && error.message.includes('429')) || (error?.error?.code === 429);
-      
-      if (retries > 0 && isRateLimit) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return this.getCropRecommendations(location, retries - 1);
-      }
-      if (shouldDisableGemini(error)) {
-        geminiDisabled = true;
-        return [
-          { cropName: "Tomato", reason: "Shortage in nearby Mandis due to seasonal shift", demand: "High", trend: "Rising" },
-          { cropName: "Onion", reason: "End of season storage depletion reported locally", demand: "High", trend: "Stable" },
-          { cropName: "Wheat", reason: "Stable procurement rates at local mandis", demand: "Medium", trend: "Stable" }
-        ];
-      }
-      
-      console.error("Recommendation error", error);
-      // Return helpful defaults if API is exhausted
       return [
         { cropName: "Tomato", reason: "Shortage in nearby Mandis due to seasonal shift", demand: "High", trend: "Rising" },
         { cropName: "Onion", reason: "End of season storage depletion reported locally", demand: "High", trend: "Stable" },
@@ -220,105 +60,230 @@ export const geminiService = {
    * Text to Speech using Gemini with automatic fallback to Web Speech API on quota exhaustion (429)
    */
   async speak(text: string, voice: 'Kore' | 'Puck' | 'Charon' = 'Kore') {
-    if (!hasValidKey()) {
-      console.warn("Gemini API key missing, falling back to browser speech.");
-      fallbackSpeak(text);
-      return;
-    }
-    if (geminiDisabled) {
-      fallbackSpeak(text);
-      return;
-    }
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    fallbackSpeak(text);
+  },
+  async getQualityGradeFromImages(images: string[]): Promise<'Premium' | 'Good' | 'Average' | 'Fair'> {
+    if (!images || images.length === 0) return 'Good';
+
     try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice },
-            },
-          },
-        },
-      });
+      // Try AI grading first
+      const res = await aiAPI.getQualityGrade(images);
+      if (res && res.grade) {
+        return res.grade as 'Premium' | 'Good' | 'Average' | 'Fair';
+      }
+    } catch (error) {
+      console.warn('AI grading failed, falling back to local analysis:', error);
+    }
 
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!base64Audio) {
-        fallbackSpeak(text);
-        return;
+    // Fallback to local analysis
+    return this.calculateLocalQualityGrade(images);
+  },
+
+  async calculateLocalQualityGrade(images: string[]): Promise<'Premium' | 'Good' | 'Average' | 'Fair'> {
+    if (!images || images.length === 0) return 'Good';
+
+    try {
+      const analyze = (src: string) =>
+        new Promise<{ brightness: number; contrast: number; edge: number; saturation: number; uniformity: number }>((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = 'Anonymous'; // Handle CORS if images are external
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const size = 128; // Downsample for performance
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (!ctx) return reject(new Error('No canvas context'));
+
+            ctx.drawImage(img, 0, 0, size, size);
+            const imageData = ctx.getImageData(0, 0, size, size);
+            const data = imageData.data;
+
+            let rSum = 0, gSum = 0, bSum = 0;
+            let totalBrightness = 0;
+            let totalSaturation = 0;
+            let edgeSum = 0;
+            let pixelCount = 0;
+
+            // First pass: Calculate means
+            for (let i = 0; i < data.length; i += 4) {
+              const r = data[i];
+              const g = data[i + 1];
+              const b = data[i + 2];
+
+              rSum += r;
+              gSum += g;
+              bSum += b;
+
+              const max = Math.max(r, g, b);
+              const min = Math.min(r, g, b);
+              const l = (max + min) / 2;
+              const s = max === min ? 0 : (l > 127 ? (max - min) / (510 - max - min) : (max - min) / (max + min));
+
+              totalBrightness += l;
+              totalSaturation += s;
+              pixelCount++;
+            }
+
+            const rMean = rSum / pixelCount;
+            const gMean = gSum / pixelCount;
+            const bMean = bSum / pixelCount;
+            const brightnessMean = totalBrightness / pixelCount;
+            const saturationMean = totalSaturation / pixelCount;
+
+            // Second pass: Calculate Variance (Uniformity) and Edges
+            let rVar = 0, gVar = 0, bVar = 0;
+
+            const idx = (x: number, y: number) => (y * size + x) * 4;
+
+            for (let y = 0; y < size; y++) {
+              for (let x = 0; x < size; x++) {
+                const i = idx(x, y);
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+
+                rVar += (r - rMean) ** 2;
+                gVar += (g - gMean) ** 2;
+                bVar += (b - bMean) ** 2;
+
+                // Simple Edge Detection
+                if (x < size - 1 && y < size - 1) {
+                  const nextX = idx(x + 1, y);
+                  const nextY = idx(x, y + 1);
+                  const grayObj = (r + g + b) / 3;
+                  const grayX = (data[nextX] + data[nextX + 1] + data[nextX + 2]) / 3;
+                  const grayY = (data[nextY] + data[nextY + 1] + data[nextY + 2]) / 3;
+                  edgeSum += Math.abs(grayObj - grayX) + Math.abs(grayObj - grayY);
+                }
+              }
+            }
+
+            const colorVariance = Math.sqrt((rVar + gVar + bVar) / 3 / pixelCount);
+            const edgeDensity = edgeSum / (pixelCount * 2);
+
+            // Contrast implies better visibility, but too high variance might mean messy background
+            // Low variance = Uniform color (Premium trait for many crops)
+            // High saturation = Freshness
+
+            // Normalize metrics roughly to 0-100 range for readability
+            resolve({
+              brightness: brightnessMean, // 0-255
+              contrast: colorVariance,    // 0-100+
+              edge: edgeDensity,          // 0-50+
+              saturation: saturationMean * 100, // 0-100
+              uniformity: 100 - Math.min(100, colorVariance) // Higher is more uniform
+            });
+          };
+          img.onerror = () => reject(new Error('Image load failed'));
+          img.src = src;
+        });
+
+      // Analyze the first image (or average of first 3)
+      const metrics = await analyze(images[0]);
+
+      // console.log('Image Metrics:', metrics);
+
+      // grading Logic
+
+      // 1. Extreme lighting conditions check
+      if (metrics.brightness < 40 || metrics.brightness > 225) return 'Fair'; // Too dark or washed out
+
+      // 2. Saturation Check (Dull/Gray images are likely lower quality)
+      if (metrics.saturation < 15) return 'Average';
+
+      // 3. Premium Check
+      // Needs good lighting, good saturation (fresh), and decent uniformity
+      if (metrics.brightness > 60 && metrics.brightness < 200 &&
+        metrics.saturation > 30 &&
+        metrics.uniformity > 45 && metrics.edge > 5) {
+        return 'Premium';
       }
 
-      const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      
-      const audioBuffer = await decodeAudioData(
-        decode(base64Audio),
-        outputAudioContext,
-        24000,
-        1,
-      );
-
-      const source = outputAudioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(outputAudioContext.destination);
-      source.start();
-    } catch (error: any) {
-      if (shouldDisableGemini(error)) {
-        geminiDisabled = true;
-        fallbackSpeak(text);
-        return;
+      // 4. Good Check
+      if (metrics.brightness > 50 && metrics.brightness < 210 &&
+        metrics.saturation > 20) {
+        return 'Good';
       }
-      console.warn("Gemini TTS failed. Falling back to browser speech.", error);
-      fallbackSpeak(text);
+
+      // 5. Average Check
+      if (metrics.uniformity < 30 || metrics.edge < 3) {
+        return 'Average';
+      }
+
+      return 'Fair';
+
+    } catch (e) {
+      console.warn('Local grading failed, defaulting:', e);
+      return 'Good';
     }
   }
   ,
 
-  async getQualityGradeFromImages(images: string[], retries = 1): Promise<'Premium' | 'Good' | 'Average' | 'Fair'> {
-    if (!hasValidKey() || geminiDisabled) return 'Good';
-    if (!images || images.length === 0) return 'Good';
-
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `You are grading a farmer's crop harvest quality based on photos.\nReturn ONLY JSON: {"grade": "Premium" | "Good" | "Average" | "Fair"}.\nRules:\n- Premium: very uniform color/size, clean, no visible defects.\n- Good: minor defects, generally good.\n- Average: noticeable defects/mixed maturity.\n- Fair: visible defects, bruising, rot, heavy dirt.\nIf unsure, choose Good.`;
-
-    const parts: any[] = [{ text: prompt }];
-    for (const img of images.slice(0, 4)) {
-      const match = String(img).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/);
-      if (!match) continue;
-      parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
-    }
-
+  async validateCropImagesMatchSelected(
+    images: string[],
+    expectedCropName: string,
+    retries = 1
+  ): Promise<{ status: 'VERIFIED' | 'REJECTED' | 'PENDING' | 'FAILED'; matches: boolean; detectedCrop: string; confidence: number; userMessage: string }> {
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: [{ parts }],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              grade: { type: Type.STRING }
-            },
-            required: ['grade']
-          }
-        }
-      });
-
-      const json = JSON.parse(response.text || '{}');
-      const grade = String(json.grade || '').trim();
-      if (grade === 'Premium' || grade === 'Good' || grade === 'Average' || grade === 'Fair') return grade;
-      return 'Good';
+      const expected = String(expectedCropName || '').trim();
+      if (!expected) return { status: 'FAILED', matches: false, detectedCrop: 'UNKNOWN', confidence: 0, userMessage: 'Please select a crop first.' };
+      const res = await aiAPI.verifyCrop({ expectedCropName: expected, images: images.slice(0, 3) });
+      const status = String(res.status || (res.matches ? 'VERIFIED' : 'REJECTED')).toUpperCase();
+      const normalizedStatus =
+        status === 'VERIFIED' || status === 'REJECTED' || status === 'PENDING' || status === 'FAILED'
+          ? (status as 'VERIFIED' | 'REJECTED' | 'PENDING' | 'FAILED')
+          : (Boolean(res.matches) ? 'VERIFIED' : 'REJECTED');
+      return {
+        status: normalizedStatus,
+        matches: Boolean(res.matches),
+        detectedCrop: String(res.detectedCrop || 'UNKNOWN'),
+        confidence: Number.isFinite(Number(res.confidence)) ? Math.max(0, Math.min(1, Number(res.confidence))) : 0,
+        userMessage: String(res.userMessage || '')
+      };
     } catch (error: any) {
-      if (retries > 0 && error?.status === 429) {
+      if (retries > 0 && String(error?.message || '').includes('429')) {
         await new Promise(resolve => setTimeout(resolve, 1500));
-        return this.getQualityGradeFromImages(images, retries - 1);
+        return this.validateCropImagesMatchSelected(images, expectedCropName, retries - 1);
       }
-      if (shouldDisableGemini(error)) {
-        geminiDisabled = true;
-        return 'Good';
-      }
-      return 'Good';
+      return { status: 'FAILED', matches: false, detectedCrop: 'UNKNOWN', confidence: 0, userMessage: 'AI verification is temporarily unavailable. Please try again later.' };
+    }
+  }
+  ,
+
+  async verifyHarvestImage(
+    cropName: string,
+    selectedHarvestType: 'STANDING_CROP' | 'HARVESTED_CROP' | 'PROCESSED_CLEANED_CROP' | 'SEED_NURSERY',
+    image: string | string[],
+    retries = 3
+  ): Promise<{
+    isValid: boolean;
+    detectedCrop: string | null;
+    detectedHarvestStage: string | null;
+    confidence: number;
+    reason: string;
+    userMessage: string;
+  }> {
+    try {
+      const images = Array.isArray(image) ? image : [image];
+      const res = await aiAPI.verifyHarvest({ cropName, selectedHarvestType, images });
+      return {
+        isValid: Boolean(res.isValid),
+        detectedCrop: res.detectedCrop ?? null,
+        detectedHarvestStage: res.detectedHarvestStage ?? null,
+        confidence: Number.isFinite(Number(res.confidence)) ? Math.max(0, Math.min(1, Number(res.confidence))) : 0,
+        reason: String(res.reason || ''),
+        userMessage: String(res.userMessage || '')
+      };
+    } catch (error: any) {
+      return {
+        isValid: false,
+        detectedCrop: null,
+        detectedHarvestStage: null,
+        confidence: 0,
+        reason: 'Verification failed',
+        userMessage: String(error?.message || 'AI verification is temporarily unavailable. Please try again later.')
+      };
     }
   }
 };

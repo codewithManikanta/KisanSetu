@@ -1,11 +1,23 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { CROPS, TRANSLATIONS } from '../constants.tsx';
-import { Listing, MarketPrice, User, Language, Gender, ListingStatus, Crop } from '../types';
+import { Listing, MarketPrice, User, Language, Gender, ListingStatus, Crop, HarvestType } from '../types';
 import { geminiService } from '../services/geminiService';
 import FarmerOrdersView from './FarmerOrdersView';
-import { listingAPI } from '../services/api';
+import { aiAPI, listingAPI, marketPriceAPI } from '../services/api';
+import { socketService } from '../services/socketService';
 import StatusBadge from './StatusBadge';
+import MarketPricesView from './MarketPricesView';
+import WeatherWidget from './WeatherWidget';
+import FarmerAnalytics from './FarmerAnalytics';
+import { useRoleTranslate } from '../hooks/useRoleTranslate';
+import MarketTicker from './MarketTicker';
+import { smartCropRectFromRGBA } from '../src/utils/smartCrop';
+import { computeQualityMetricsFromRGBA, qualityGradeFromMetrics, QualityMetrics } from '../src/utils/imageQuality';
+import { compressImage } from '../utils/imageUtils';
+import LocationPicker from './LocationPicker';
+import { useNavigate } from 'react-router-dom';
+import './FarmerDashboard.css';
 
 interface EnhancedMarketPrice extends MarketPrice {
   msp: number;
@@ -22,42 +34,64 @@ interface CropRecommendation {
 
 interface FarmerDashboardProps {
   activeTab: string;
-  onViewOffers?: (listingOrOffer: any) => void;
   acceptedDeals: any[];
   onAddDelivery: (delivery: any) => void;
   onDealHandled: (dealId: string) => void;
   user: User;
   onUpdateProfile: (updates: Partial<User>) => void;
-  language: Language;
   earnings: { total: number; pending: number };
 }
 
+
+
 type SortOption = 'date-desc' | 'date-asc' | 'price-asc' | 'price-desc' | 'qty-desc' | 'qty-asc';
 
-const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
+type CropImageVerification = {
+  signature: string;
+  status: 'VERIFIED' | 'REJECTED' | 'PENDING' | 'FAILED';
+  detectedCrop: string;
+  detectedCropId: string | null;
+  confidence: number;
+  summary: string;
+  paragraphSummary: string;
+  detailedDescription: string;
+  textSymbols: string[];
+  primaryBoxes: Array<{ x: number; y: number; w: number; h: number }>;
+  grade: 'Premium' | 'Very Good' | 'Good' | 'Average' | 'Fair' | null;
+  gradeReason: string;
+  matches: boolean;
+  userMessage: string;
+};
+
+const FarmerDashboard: React.FC<FarmerDashboardProps> = React.memo(({
   activeTab,
-  onViewOffers,
   acceptedDeals,
   onAddDelivery,
   onDealHandled,
   user,
   onUpdateProfile,
-  language,
-  earnings
+  earnings,
 }) => {
-  const [internalView, setInternalView] = useState<'default' | 'add' | 'editProfile' | 'delivery'>('default');
+  const { t } = useRoleTranslate();
+  const navigate = useNavigate();
+  const activeTabRef = useRef(activeTab);
+  const [internalView, setInternalView] = useState<'default' | 'add' | 'viewProfile' | 'editProfile' | 'delivery'>('default');
   const [editListingId, setEditListingId] = useState<string | null>(null);
   const [listingToDelete, setListingToDelete] = useState<string | null>(null);
+  const [isDeletingListing, setIsDeletingListing] = useState(false);
   const [aiRecommendations, setAiRecommendations] = useState<CropRecommendation[]>([]);
   const [isLoadingRecs, setIsLoadingRecs] = useState(false);
   const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [imageValidationError, setImageValidationError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cropperContainerRef = useRef<HTMLDivElement>(null);
+  const hasFetchedPrices = useRef(false);
+  const hasFetchedRecs = useRef(false);
+  const isProcessingFiles = useRef(false);
 
-  const t = (key: string) => {
-    return TRANSLATIONS[language]?.[key] || TRANSLATIONS.en[key] || key;
-  };
+
 
   const getAnimDelayClass = (idx: number, stepMs: number) => {
     const ms = Math.min(1500, idx * stepMs);
@@ -75,25 +109,25 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
       price: d.price,
       amount: d.price * d.qty,
       date: d.date,
+      timestamp: d.timestamp,
       icon: d.crop === 'Tomato' ? '🍅' : '🌾'
-    })),
-    // Keep some older history
-    { id: 's-mock-1', cropId: '6', cropName: 'Mango', buyer: 'FreshDirect', qty: 500, price: 90, amount: 45000, date: '08 Nov', icon: '🥭' }
+    }))
   ];
 
-  const [incomingOffers] = useState([
-    { id: 'off-1', buyer: 'FreshDirect', crop: 'Tomato', qty: 500, price: 34, status: 'OPEN', timestamp: '2h ago' },
-    { id: 'off-2', buyer: 'VegMart Wholesalers', crop: 'Tomato', qty: 500, price: 32, status: 'OPEN', timestamp: '5h ago' },
-    { id: 'off-3', buyer: 'Reliance Retail', crop: 'Wheat', qty: 1000, price: 26, status: 'OPEN', timestamp: '1d ago' },
-  ]);
+
 
   const [tempProfile, setTempProfile] = useState({
     name: user.name,
     gender: user.gender || Gender.MALE,
     email: user.email || '',
+    profilePhoto: user.profilePhoto || '',
+    address: user.location?.address || '',
     village: user.location?.village || '',
     district: user.location?.district || '',
-    state: user.location?.state || ''
+    state: user.location?.state || '',
+    pincode: user.location?.pincode || '',
+    latitude: user.location?.latitude || null,
+    longitude: user.location?.longitude || null
   });
 
   const tipsForSuccess = [
@@ -128,15 +162,38 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
       name: user.name,
       gender: user.gender || Gender.MALE,
       email: user.email || '',
+      profilePhoto: user.profilePhoto || '',
+      address: user.location?.address || '',
       village: user.location?.village || '',
       district: user.location?.district || '',
-      state: user.location?.state || ''
+      state: user.location?.state || '',
+      pincode: user.location?.pincode || '',
+      latitude: user.location?.latitude || null,
+      longitude: user.location?.longitude || null
     });
   }, [user]);
 
+  const handleProfilePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      try {
+        const base64 = await compressImage(file, 800, 0.7) as string;
+        setTempProfile(prev => ({ ...prev, profilePhoto: base64 }));
+        onUpdateProfile({ profilePhoto: base64 });
+        geminiService.speak("Profile photo updated.");
+      } catch (error) {
+        console.error("Photo upload failed", error);
+        alert("Failed to upload photo");
+      }
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'home' && aiRecommendations.length === 0) {
-      fetchRecommendations();
+      if (!hasFetchedRecs.current) {
+        hasFetchedRecs.current = true;
+        fetchRecommendations();
+      }
     }
   }, [activeTab]);
 
@@ -160,26 +217,53 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
 
   const [newListing, setNewListing] = useState({
     cropId: '',
+    harvestType: HarvestType.HARVESTED_CROP as HarvestType,
     quantity: '',
     unit: 'kg' as 'kg' | 'quintal',
     expectedPrice: '',
     grade: 'Premium',
     harvestDate: new Date().toISOString().split('T')[0],
+    saleDate: new Date().toISOString().split('T')[0],
     images: [] as string[]
   });
+  const [rawListingImages, setRawListingImages] = useState<string[]>([]);
+  const [cropIdOverride, setCropIdOverride] = useState<string | null>(null);
+
+  const [cropperIndex, setCropperIndex] = useState<number | null>(null);
+  const [cropperRect, setCropperRect] = useState<{ x: number; y: number; size: number }>({ x: 0.1, y: 0.1, size: 0.8 });
+  const [isDraggingCrop, setIsDraggingCrop] = useState(false);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number; rectX: number; rectY: number } | null>(null);
+  const cropperRectRef = useRef<HTMLDivElement>(null);
+
+  const [imageVerification, setImageVerification] = useState<CropImageVerification | null>(null);
+  const [isVerifyingImages, setIsVerifyingImages] = useState(false);
+  const [imageVerificationError, setImageVerificationError] = useState<string | null>(null);
+  const [qualityMetrics, setQualityMetrics] = useState<QualityMetrics | null>(null);
 
   const [listings, setListings] = useState<Listing[]>([]);
 
   const [marketPrices, setMarketPrices] = useState<EnhancedMarketPrice[]>([]);
   const [loadingPrices, setLoadingPrices] = useState(false);
+  const [listingsLoadError, setListingsLoadError] = useState<string | null>(null);
+  const [chatsLoadError, setChatsLoadError] = useState<string | null>(null);
 
   const totalEarned = soldHistory.reduce((sum, item) => sum + item.amount, 0);
   const totalVolume = soldHistory.reduce((sum, item) => sum + item.qty, 0);
-  const pendingPayments = 5400;
+  const pendingPayments = earnings.pending;
 
   useEffect(() => {
-    fetchPrices();
+    if (!hasFetchedPrices.current) {
+      hasFetchedPrices.current = true;
+      fetchPrices();
+    }
   }, []);
+
+  useEffect(() => {
+    if (!cropperRectRef.current) return;
+    cropperRectRef.current.style.setProperty('--cropper-x', `${cropperRect.x}`);
+    cropperRectRef.current.style.setProperty('--cropper-y', `${cropperRect.y}`);
+    cropperRectRef.current.style.setProperty('--cropper-size', `${cropperRect.size}`);
+  }, [cropperRect.x, cropperRect.y, cropperRect.size]);
 
   const loadCrops = async () => {
     try {
@@ -195,11 +279,18 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
 
   const loadMyListings = async () => {
     try {
+      setListingsLoadError(null);
       const res = await listingAPI.getMyListings();
       setListings(res.listings || []);
-    } catch (e) {
+    } catch (e: any) {
+      setListings([]);
+      const status = typeof e?.status === 'number' ? e.status : null;
+      const msg = e?.message || 'Failed to load listings.';
+      setListingsLoadError(status === 401 ? 'Session expired. Please login again.' : msg);
     }
   };
+
+
 
   useEffect(() => {
     loadCrops();
@@ -211,6 +302,19 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
       loadMyListings();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+
+  }, [activeTab]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    socketService.connect();
+
+  }, []);
 
   const fetchPrices = async () => {
     setLoadingPrices(true);
@@ -227,29 +331,54 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
         setMarketPrices(prev => prev.map(m => m.cropId === '1' ? { ...m, avg: p.avgPrice } : m));
       }
     } catch (error: any) {
-      console.warn("Price fetch failed (Quota?), using mock.");
+      // console.warn("Price fetch failed (Quota?), using mock.");
     } finally {
       setLoadingPrices(false);
     }
   };
 
   const handlePublish = async () => {
+    if (isAnalyzingPhoto || isVerifyingImages) return;
     const listingData = {
       cropId: newListing.cropId,
+      harvestType: newListing.harvestType,
       quantity: Number(newListing.quantity),
       unit: newListing.unit,
       expectedPrice: Number(newListing.expectedPrice),
       grade: newListing.grade,
       harvestDate: newListing.harvestDate,
-      images: newListing.images.length > 0 ? newListing.images : ['https://images.unsplash.com/photo-1592924357228-91a4daadcfea?auto=format&fit=crop&q=80&w=400'],
+      saleDate: newListing.saleDate,
+      qualitySummary: imageVerification?.paragraphSummary || imageVerification?.summary || imageVerification?.detailedDescription || null,
+      images: newListing.images,
       location: user.location ? `${user.location.village}, ${user.location.district}` : 'India'
     };
 
-    const cropName = cropsForUi.find(c => c.id === listingData.cropId)?.name || listingData.cropId;
+    let cropName = cropsForUi.find(c => c.id === listingData.cropId)?.name || listingData.cropId;
 
     try {
       if (!listingData.cropId || listingData.cropId.length < 8) {
         throw new Error('Crop list not loaded. Please refresh and try again.');
+      }
+      if (!Array.isArray(listingData.images) || listingData.images.length === 0) {
+        const msg = 'Please add a valid image related to harvest.';
+        setImageValidationError(msg);
+        throw new Error(msg);
+      }
+
+      const signature = getImagesSignature(listingData.images);
+      const verified = (imageVerification && imageVerification.signature === signature) ? imageVerification : await verifyListingImages(listingData.images);
+      if (!verified || verified.status !== 'VERIFIED') {
+        const msg = verified?.userMessage || 'Please upload a clear crop photo so the crop can be detected.';
+        setImageVerificationError(msg);
+        throw new Error(msg);
+      }
+
+      if (verified.detectedCropId && verified.detectedCropId !== listingData.cropId) {
+        listingData.cropId = verified.detectedCropId;
+        cropName = cropsForUi.find(c => c.id === listingData.cropId)?.name || verified.detectedCrop || listingData.cropId;
+      }
+      if (verified.grade) {
+        listingData.grade = verified.grade as any;
       }
       if (editListingId) {
         await listingAPI.update(editListingId, listingData);
@@ -261,7 +390,9 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
       await loadMyListings();
     } catch (e: any) {
       const message = e?.message || 'Failed to publish listing.';
-      alert(message);
+      if (message !== 'Please add a valid image related to harvest.') {
+        alert(message);
+      }
       geminiService.speak(message);
       return;
     }
@@ -270,13 +401,18 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
     setEditListingId(null);
     setNewListing(prev => ({
       cropId: cropsForUi[0]?.id || prev.cropId,
+      harvestType: HarvestType.HARVESTED_CROP,
       quantity: '',
       unit: 'kg',
       expectedPrice: '',
       grade: 'Premium',
       harvestDate: new Date().toISOString().split('T')[0],
+      saleDate: new Date().toISOString().split('T')[0],
       images: []
     }));
+    setRawListingImages([]);
+    setImageVerification(null);
+    setImageVerificationError(null);
   };
 
   const getPriceCompetitiveness = (expected: number, cropId: string, listingMandiPrice?: number) => {
@@ -285,64 +421,83 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
 
     if (diff < -5) {
       return {
-        label: t('below_market'),
+        label: t('farmer.below_market'),
         color: 'bg-blue-100 text-blue-700',
         barColor: 'bg-blue-500',
         icon: 'fa-bolt',
-        advice: `${t('price_advice_low')} (${Math.abs(Math.round(diff))}% below market).`,
+        advice: `${t('farmer.price_advice_low')} (${Math.abs(Math.round(diff))}% below market).`,
         type: 'below',
         index: 1
       };
     } else if (diff <= 5) {
       return {
-        label: t('competitive'),
+        label: t('farmer.competitive'),
         color: 'bg-emerald-100 text-emerald-700',
         barColor: 'bg-emerald-500',
         icon: 'fa-circle-check',
-        advice: t('price_advice_competitive'),
+        advice: t('farmer.price_advice_competitive'),
         type: 'competitive',
         index: 2
       };
     } else if (diff <= 15) {
       return {
-        label: t('slightly_above'),
+        label: t('farmer.slightly_above'),
         color: 'bg-amber-100 text-amber-700',
         barColor: 'bg-amber-500',
         icon: 'fa-triangle-exclamation',
-        advice: `${t('price_advice_slightly_high')} (${Math.round(diff)}% premium).`,
+        advice: `${t('farmer.price_advice_slightly_high')} (${Math.round(diff)}% premium).`,
         type: 'slightly_above',
         index: 3
       };
     } else {
       return {
-        label: t('significantly_above'),
+        label: t('farmer.significantly_above'),
         color: 'bg-red-100 text-red-700',
         barColor: 'bg-red-500',
         icon: 'fa-circle-up',
-        advice: `${t('price_advice_high')} (${Math.round(diff)}% premium).`,
+        advice: `${t('farmer.price_advice_high')} (${Math.round(diff)}% premium).`,
         type: 'significantly_above',
         index: 4
       };
     }
   };
 
-  const getOffersForListing = (cropId: string) => {
-    const cropName = CROPS.find(c => c.id === cropId)?.name || '';
-    return incomingOffers.filter(o => o.crop.toLowerCase() === cropName.toLowerCase());
-  };
+
 
   const handleSaveProfile = () => {
-    onUpdateProfile({
+    const updatedProfile = {
       name: tempProfile.name,
       gender: tempProfile.gender,
       email: tempProfile.email,
       location: {
+        address: tempProfile.address,
         village: tempProfile.village,
         district: tempProfile.district,
-        state: tempProfile.state
+        state: tempProfile.state,
+        pincode: tempProfile.pincode,
+        latitude: tempProfile.latitude,
+        longitude: tempProfile.longitude
       }
-    });
-    setInternalView('default');
+    };
+
+    onUpdateProfile(updatedProfile);
+
+    // Update tempProfile to reflect the saved changes
+    setTempProfile(prev => ({
+      ...prev,
+      name: updatedProfile.name,
+      gender: updatedProfile.gender,
+      email: updatedProfile.email,
+      address: updatedProfile.location.address,
+      village: updatedProfile.location.village,
+      district: updatedProfile.location.district,
+      state: updatedProfile.location.state,
+      pincode: updatedProfile.location.pincode,
+      latitude: updatedProfile.location.latitude,
+      longitude: updatedProfile.location.longitude
+    }));
+
+    setInternalView('viewProfile');
     geminiService.speak("Profile updated successfully!");
   };
 
@@ -350,68 +505,343 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
     setEditListingId(l.id);
     setNewListing({
       cropId: l.cropId,
+      harvestType: l.harvestType || HarvestType.HARVESTED_CROP,
       quantity: String(l.quantity),
       unit: l.unit,
       expectedPrice: String(l.expectedPrice),
       grade: l.grade,
       harvestDate: String(l.harvestDate).includes('T') ? String(l.harvestDate).slice(0, 10) : String(l.harvestDate),
+      saleDate: l.saleDate ? (String(l.saleDate).includes('T') ? String(l.saleDate).slice(0, 10) : String(l.saleDate)) : new Date().toISOString().split('T')[0],
       images: l.images
     });
+    setRawListingImages(Array.isArray(l.images) ? l.images : []);
     setInternalView('add');
   };
 
-  const confirmDeleteListing = () => {
-    if (listingToDelete) {
-      setListings(prev => prev.filter(l => l.id !== listingToDelete));
+  const confirmDeleteListing = async () => {
+    if (!listingToDelete || isDeletingListing) return;
+    setIsDeletingListing(true);
+    try {
+      await listingAPI.delete(listingToDelete);
       setListingToDelete(null);
+      await loadMyListings();
+      geminiService.speak("Listing deleted.");
+    } catch (e: any) {
+      const message = e?.message || 'Failed to delete listing.';
+      alert(message);
+      geminiService.speak(message);
+    } finally {
+      setIsDeletingListing(false);
     }
   };
 
-  const processFiles = (files: FileList | File[]) => {
-    const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+  const getImagesSignature = (imgs: string[]) => imgs.map(i => `${i.length}:${i.slice(0, 48)}`).join('|');
 
-    if (newListing.images.length + validFiles.length > 6) {
-      geminiService.speak("Maximum 6 photos allowed per listing.");
+  const getCropNameById = (cropId: string) => {
+    return cropsForUi.find(c => c.id === cropId)?.name || '';
+  };
+
+  const verifyListingImages = async (imgs: any[]) => {
+    if (!imgs || imgs.length === 0) return null;
+    const signature = getImagesSignature(imgs);
+    if (imageVerification?.signature === signature && imageVerification.status === 'VERIFIED') return imageVerification;
+
+    const expectedCropName = getCropNameById(newListing.cropId);
+    setIsVerifyingImages(true);
+    setImageVerificationError(null);
+    try {
+      // Downscale images to 512px for faster AI processing (smaller payload = faster upload + inference)
+      const downscaleForAI = (dataUrl: string): Promise<string> => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const maxSide = 768;
+            const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+            const w = Math.round(img.width * scale);
+            const h = Math.round(img.height * scale);
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            const ctx = c.getContext('2d');
+            if (!ctx) { resolve(dataUrl); return; }
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(c.toDataURL('image/jpeg', 0.5));
+          };
+          img.onerror = () => resolve(dataUrl);
+          img.src = dataUrl;
+        });
+      };
+      // Processing first image - handle both Base64 strings and File objects
+      let processUrl = '';
+      if (typeof imgs[0] === 'string' && imgs[0].startsWith('data:')) {
+        processUrl = imgs[0];
+      } else if ((imgs[0] as any) instanceof File || (imgs[0] as any) instanceof Blob) {
+        processUrl = URL.createObjectURL(imgs[0] as any);
+      } else if (typeof imgs[0] === 'string') {
+        processUrl = imgs[0]; // Assume it's already a URL
+      } else {
+        console.error('[Dashboard] Unexpected image type in verifyListingImages:', typeof imgs[0]);
+        return null;
+      }
+
+      console.log('[Dashboard] Starting analysis for:', processUrl.substring(0, 50) + '...');
+      const aiImageBase64 = await downscaleForAI(processUrl);
+      console.log('[Dashboard] AI Image prepared. Calling visionDetect...');
+
+      const visionRes = await aiAPI.visionDetect({ images: [aiImageBase64], expectedCropName });
+      console.log('[Dashboard] AI Detection result:', visionRes);
+
+      const next: CropImageVerification = {
+        signature,
+        status: 'VERIFIED',
+        detectedCrop: visionRes.detectedCrop || 'UNKNOWN',
+        detectedCropId: visionRes.detectedCropId || null,
+        confidence: typeof visionRes.confidence === 'number' ? visionRes.confidence : 0,
+        summary: visionRes.summary || '',
+        paragraphSummary: visionRes.summary || '',
+        detailedDescription: visionRes.summary || '',
+        textSymbols: [],
+        primaryBoxes: [],
+        grade: visionRes.grade || null,
+        gradeReason: '',
+        matches: true,
+        userMessage: '',
+      };
+
+      // Auto-select crop ID if detected
+      if (next.detectedCrop && next.detectedCrop !== 'UNKNOWN') {
+        const matchingCrop = cropsForUi.find(c =>
+          c.name.toLowerCase() === next.detectedCrop.toLowerCase() ||
+          next.detectedCrop.toLowerCase().includes(c.name.toLowerCase())
+        );
+        if (matchingCrop) {
+          console.log('[Dashboard] Auto-selecting crop:', matchingCrop.name);
+          setNewListing(prev => ({ ...prev, cropId: matchingCrop.id }));
+          setCropIdOverride(null);
+          next.detectedCropId = matchingCrop.id;
+        }
+      }
+
+      console.log('[Dashboard] Setting imageVerification state:', next);
+      setImageVerification(next);
+
+      if (next.grade) {
+        setNewListing(prev => {
+          console.log('[Dashboard] Syncing newListing.grade to:', next.grade);
+          return { ...prev, grade: next.grade as any };
+        });
+      }
+      return next;
+    } catch (e: any) {
+      const msg = e?.message || 'Image verification failed.';
+      setImageVerificationError(msg);
+      setImageVerification(null);
+      return null;
+    } finally {
+      setIsVerifyingImages(false);
+    }
+  };
+
+  const processImageDataUrl = async (dataUrl: string) => {
+    try {
+      const img = new Image();
+      const loaded = await new Promise<HTMLImageElement>((resolve, reject) => {
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Image decode failed'));
+        img.src = dataUrl;
+      });
+
+      const maxSide = 1024;
+      const w = loaded.width;
+      const h = loaded.height;
+      const scale = Math.min(1, maxSide / Math.max(w, h));
+      const targetW = Math.max(1, Math.round(w * scale));
+      const targetH = Math.max(1, Math.round(h * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return { original: dataUrl, cropped: dataUrl, metrics: null as QualityMetrics | null, suggestedRect: null as { x: number; y: number; size: number } | null };
+      ctx.drawImage(loaded, 0, 0, targetW, targetH);
+      const compressed = canvas.toDataURL('image/jpeg', 0.82);
+      const base = compressed;
+
+      const analysisSize = 192;
+      const aScale = Math.min(1, analysisSize / Math.max(targetW, targetH));
+      const aW = Math.max(1, Math.round(targetW * aScale));
+      const aH = Math.max(1, Math.round(targetH * aScale));
+      const analysisCanvas = document.createElement('canvas');
+      analysisCanvas.width = aW;
+      analysisCanvas.height = aH;
+      const aCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
+      if (!aCtx) return { original: base, cropped: base, metrics: null as QualityMetrics | null, suggestedRect: null as { x: number; y: number; size: number } | null };
+      const analysisImg = new Image();
+      await new Promise<void>((resolve, reject) => {
+        analysisImg.onload = () => resolve();
+        analysisImg.onerror = () => reject(new Error('Image decode failed'));
+        analysisImg.src = base;
+      });
+      aCtx.drawImage(analysisImg, 0, 0, aW, aH);
+      const imageData = aCtx.getImageData(0, 0, aW, aH);
+      const rect = smartCropRectFromRGBA(imageData.data, aW, aH, 1);
+
+      const cropRect = {
+        x: Math.round((rect.x / aW) * targetW),
+        y: Math.round((rect.y / aH) * targetH),
+        w: Math.round((rect.w / aW) * targetW),
+        h: Math.round((rect.h / aH) * targetH)
+      };
+
+      const cropCanvas = document.createElement('canvas');
+      cropCanvas.width = cropRect.w;
+      cropCanvas.height = cropRect.h;
+      const cCtx = cropCanvas.getContext('2d');
+      if (!cCtx) return { original: base, cropped: base, metrics: computeQualityMetricsFromRGBA(imageData.data, aW, aH), suggestedRect: null as { x: number; y: number; size: number } | null };
+      cCtx.drawImage(canvas, cropRect.x, cropRect.y, cropRect.w, cropRect.h, 0, 0, cropRect.w, cropRect.h);
+      const cropped = cropCanvas.toDataURL('image/jpeg', 0.85);
+      const metrics = computeQualityMetricsFromRGBA(imageData.data, aW, aH);
+      const sizeNorm = Math.min(1, Math.max(cropRect.w / targetW, cropRect.h / targetH));
+      const suggestedRect = {
+        x: Math.max(0, Math.min(1 - sizeNorm, cropRect.x / targetW)),
+        y: Math.max(0, Math.min(1 - sizeNorm, cropRect.y / targetH)),
+        size: sizeNorm
+      };
+      return { original: base, cropped, metrics, suggestedRect };
+    } catch {
+      return { original: dataUrl, cropped: dataUrl, metrics: null as QualityMetrics | null, suggestedRect: null as { x: number; y: number; size: number } | null };
+    }
+  };
+
+  const processFiles = async (files: FileList | File[]) => {
+    const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+    const remainingSlots = Math.max(0, 6 - newListing.images.length);
+    if (remainingSlots === 0) {
+      const msg = 'Maximum 6 photos allowed per listing.';
+      setImageValidationError(msg);
+      geminiService.speak(msg);
       return;
     }
+    const filesToProcess = validFiles.slice(0, remainingSlots);
+    if (validFiles.length > filesToProcess.length) {
+      const msg = `Only ${remainingSlots} more photo${remainingSlots === 1 ? '' : 's'} can be added. Extra photos were skipped.`;
+      setImageValidationError(msg);
+      geminiService.speak(msg);
+    }
 
-    if (validFiles.length === 0) return;
+    if (filesToProcess.length === 0) return;
 
-    setIsAnalyzingPhoto(true);
-    geminiService.speak("Processing your harvest photos for AI grading...");
+    if (isProcessingFiles.current) {
+      console.log('[Dashboard] processFiles BLOCKED - already processing');
+      return;
+    }
+    isProcessingFiles.current = true;
+    console.log('[Dashboard] processFiles STARTING');
 
-    const uploadedImages: string[] = [];
-    let processedCount = 0;
+    try {
+      setImageValidationError(null);
+      setImageVerificationError(null);
+      setQualityMetrics(null);
+      setIsAnalyzingPhoto(true);
 
-    validFiles.forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        uploadedImages.push(reader.result as string);
-        processedCount++;
-
-        if (processedCount === validFiles.length) {
-          let nextImages: string[] = [];
-          setNewListing(prev => {
-            nextImages = [...prev.images, ...uploadedImages];
-            return {
-              ...prev,
-              images: nextImages
-            };
-          });
-
-          setTimeout(async () => {
-            try {
-              const suggestedGrade = await geminiService.getQualityGradeFromImages(nextImages);
-              setNewListing(prev => ({ ...prev, grade: suggestedGrade }));
-              geminiService.speak(`AI analysis complete. Based on the photos, I've marked this as Grade ${suggestedGrade}.`);
-            } finally {
-              setIsAnalyzingPhoto(false);
+      const locallyAccepted: File[] = [];
+      for (const file of filesToProcess) {
+        try {
+          const { width, height } = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+            if ('createImageBitmap' in window) {
+              createImageBitmap(file)
+                .then(bitmap => {
+                  const size = { width: bitmap.width, height: bitmap.height };
+                  bitmap.close();
+                  resolve(size);
+                })
+                .catch(reject);
+              return;
             }
-          }, 300);
+            const img = new Image();
+            const url = URL.createObjectURL(file);
+            img.onload = () => {
+              const size = { width: img.width, height: img.height };
+              URL.revokeObjectURL(url);
+              resolve(size);
+            };
+            img.onerror = () => {
+              URL.revokeObjectURL(url);
+              reject(new Error('Image load failed'));
+            };
+            img.src = url;
+          });
+          locallyAccepted.push(file);
+        } catch {
+          const msg = 'Photo format not supported. Try JPG or PNG.';
+          setImageValidationError(msg);
+          geminiService.speak(msg);
         }
-      };
-      reader.readAsDataURL(file as Blob);
-    });
+      }
+
+      if (locallyAccepted.length === 0) {
+        setIsAnalyzingPhoto(false);
+        return;
+      }
+
+      // Process all images in parallel
+      const processedResults = await Promise.all(locallyAccepted.map(async (file) => {
+        return new Promise<{ original: string, cropped: string, metrics: QualityMetrics | null }>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            const raw = reader.result as string;
+            resolve(await processImageDataUrl(raw));
+          };
+          reader.readAsDataURL(file);
+        });
+      }));
+
+      const uploadedImages = processedResults.map(r => r.cropped);
+      const uploadedRawImages = processedResults.map(r => r.original);
+      const metricsCollected = processedResults.map(r => r.metrics).filter((m): m is QualityMetrics => !!m);
+
+      if (metricsCollected.length > 0) {
+        const avg = metricsCollected.reduce((acc, m) => ({
+          sharpness: acc.sharpness + m.sharpness,
+          exposure: acc.exposure + m.exposure,
+          contrast: acc.contrast + m.contrast,
+          noise: acc.noise + m.noise,
+          colorBalance: acc.colorBalance + m.colorBalance,
+          highlightsClipped: acc.highlightsClipped + m.highlightsClipped,
+          shadowsClipped: acc.shadowsClipped + m.shadowsClipped
+        }), { sharpness: 0, exposure: 0, contrast: 0, noise: 0, colorBalance: 0, highlightsClipped: 0, shadowsClipped: 0 });
+
+        const denom = metricsCollected.length;
+        const avgMetrics: QualityMetrics = {
+          sharpness: avg.sharpness / denom,
+          exposure: avg.exposure / denom,
+          contrast: avg.contrast / denom,
+          noise: avg.noise / denom,
+          colorBalance: avg.colorBalance / denom,
+          highlightsClipped: avg.highlightsClipped / denom,
+          shadowsClipped: avg.shadowsClipped / denom
+        };
+        setQualityMetrics(avgMetrics);
+        const localGrade = qualityGradeFromMetrics(avgMetrics);
+        setNewListing(prev => ({ ...prev, grade: localGrade }));
+      }
+
+      // Update state and capture the NEW combined list for verification
+      const nextImages = [...newListing.images, ...uploadedImages];
+      setNewListing(prev => ({ ...prev, images: nextImages }));
+      setRawListingImages(prev => [...prev, ...uploadedRawImages]);
+
+      geminiService.speak('Photos uploaded.');
+
+      try {
+        await verifyListingImages(nextImages);
+      } catch (verifErr) {
+        console.error('[Dashboard] verifyListingImages error:', verifErr);
+      }
+
+    } finally {
+      setIsAnalyzingPhoto(false);
+      isProcessingFiles.current = false;
+    }
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -426,134 +856,219 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
   };
 
   const removeImage = (index: number) => {
-    setNewListing(prev => ({
-      ...prev,
-      images: prev.images.filter((_, i) => i !== index)
-    }));
+    let nextImages: string[] = [];
+    let nextRaw: string[] = [];
+    setNewListing(prev => {
+      nextImages = prev.images.filter((_, i) => i !== index);
+      return { ...prev, images: nextImages };
+    });
+    setRawListingImages(prev => {
+      nextRaw = prev.filter((_, i) => i !== index);
+      return nextRaw;
+    });
+    setImageVerification(null);
+    setImageVerificationError(null);
+    setQualityMetrics(null);
+    if (nextImages.length > 0) {
+      verifyListingImages(nextImages);
+    }
     geminiService.speak("Photo removed.");
   };
 
   const setAsPrimary = (index: number) => {
+    let nextImages: string[] = [];
+    let nextRaw: string[] = [];
     setNewListing(prev => {
       const newImages = [...prev.images];
       const [moved] = newImages.splice(index, 1);
       newImages.unshift(moved);
+      nextImages = newImages;
       return { ...prev, images: newImages };
     });
+    setRawListingImages(prev => {
+      const newRaw = [...prev];
+      const [moved] = newRaw.splice(index, 1);
+      newRaw.unshift(moved);
+      nextRaw = newRaw;
+      return newRaw;
+    });
+    setImageVerification(null);
+    setImageVerificationError(null);
+    setQualityMetrics(null);
+    if (nextImages.length > 0) {
+      verifyListingImages(nextImages);
+    }
     geminiService.speak("Main photo updated.");
   };
 
-  const handleViewOffersClick = (l: Listing) => {
-    const offers = getOffersForListing(l.cropId);
-    const cropName = CROPS.find(c => c.id === l.cropId)?.name;
-
-    if (offers.length > 0) {
-      geminiService.speak(`You have ${offers.length} active offers for your ${cropName}. Opening the offers list.`);
-      onViewOffers?.(l);
+  const openCropper = (idx: number) => {
+    if (!rawListingImages[idx]) return;
+    const b = imageVerification?.primaryBoxes?.[idx];
+    if (b && typeof b.x === 'number' && typeof b.y === 'number' && typeof b.w === 'number' && typeof b.h === 'number') {
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      const size = Math.max(0.2, Math.min(1, Math.max(b.w, b.h)));
+      const x = Math.max(0, Math.min(1 - size, cx - size / 2));
+      const y = Math.max(0, Math.min(1 - size, cy - size / 2));
+      setCropperRect({ x, y, size });
     } else {
-      geminiService.speak(`No active offers for ${cropName} yet. Listing remains active for buyers.`);
-      onViewOffers?.(l);
+      setCropperRect({ x: 0.1, y: 0.1, size: 0.8 });
+    }
+    setCropperIndex(idx);
+  };
+
+  const applyCropForIndex = async (idx: number) => {
+    const src = rawListingImages[idx];
+    if (!src) return;
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('Image decode failed'));
+      img.src = src;
+    });
+    const w = img.width;
+    const h = img.height;
+    const sizePx = Math.max(1, Math.round(cropperRect.size * Math.min(w, h)));
+    const xPx = Math.max(0, Math.min(w - sizePx, Math.round(cropperRect.x * w)));
+    const yPx = Math.max(0, Math.min(h - sizePx, Math.round(cropperRect.y * h)));
+    const canvas = document.createElement('canvas');
+    canvas.width = sizePx;
+    canvas.height = sizePx;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(img, xPx, yPx, sizePx, sizePx, 0, 0, sizePx, sizePx);
+    const cropped = canvas.toDataURL('image/jpeg', 0.88);
+
+    let nextImages: string[] = [];
+    setNewListing(prev => {
+      nextImages = [...prev.images];
+      nextImages[idx] = cropped;
+      return { ...prev, images: nextImages };
+    });
+    setCropperIndex(null);
+    setImageVerification(null);
+    setImageVerificationError(null);
+    if (nextImages.length > 0) {
+      await verifyListingImages(nextImages);
     }
   };
 
-  const renderOffers = () => (
-    <div className="space-y-8 pb-20 px-1 animate-in fade-in duration-500">
-      {/* Stats Cards - Updated with Real Earnings */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-green-600 p-6 rounded-[32px] text-white shadow-xl shadow-green-200 relative overflow-hidden group">
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center text-2xl mb-4 backdrop-blur-md">
-              <i className="fas fa-wallet"></i>
-            </div>
-            <p className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1">Total Revenue</p>
-            <h3 className="text-3xl font-black tracking-tight">₹{(earnings.total / 1000).toFixed(1)}k</h3>
-          </div>
-          <div className="absolute -right-4 -bottom-4 text-8xl opacity-10 rotate-12 group-hover:scale-110 transition-transform">
-            <i className="fas fa-wheat"></i>
-          </div>
-        </div>
 
-        <div className="bg-white p-6 rounded-[32px] border border-gray-100 shadow-sm relative overflow-hidden group">
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center text-2xl mb-4">
-              <i className="fas fa-clock"></i>
-            </div>
-            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Pending</p>
-            <h3 className="text-3xl font-black text-gray-900 tracking-tight">₹{(earnings.pending / 1000).toFixed(1)}k</h3>
-          </div>
-        </div>
-      </div>
-      <div className="flex justify-between items-center px-1">
-        <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-gray-400">{t('offers')}</h3>
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
-          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">{incomingOffers.length} Active Bids</p>
-        </div>
+
+
+
+
+  const renderProfileViewer = () => (
+    <div className="space-y-6 animate-in slide-in-from-right duration-300 pb-20">
+      <div className="flex items-center gap-4 mb-2 px-1">
+        <button
+          onClick={() => setInternalView('default')}
+          className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400"
+          aria-label="Back"
+        >
+          <i className="fas fa-chevron-left"></i>
+        </button>
+        <h2 className="font-black text-2xl tracking-tight">Profile Details</h2>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-        {incomingOffers.length === 0 ? (
-          <div className="bg-white p-20 rounded-[48px] border-2 border-dashed border-gray-100 text-center flex flex-col items-center gap-6">
-            <div className="w-24 h-24 bg-gray-50 rounded-full flex items-center justify-center text-gray-200 text-4xl">
-              <i className="fas fa-comments-dollar"></i>
-            </div>
-            <p className="text-[11px] font-black text-gray-300 uppercase tracking-widest">No active offers yet</p>
+      <div className="bg-white p-8 rounded-[40px] shadow-sm border border-gray-100 space-y-6">
+        {/* Personal Information */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 px-1">
+            <i className="fas fa-user text-green-500"></i>
+            <p className="text-[11px] font-black uppercase tracking-widest text-gray-900">Personal Information</p>
           </div>
-        ) : (
-          incomingOffers.map((offer, idx) => {
-            const crop = CROPS.find(c => c.name === offer.crop);
-            return (
-              <div key={offer.id} className={`bg-white rounded-[40px] shadow-sm border border-gray-100 overflow-hidden hover:shadow-xl hover:border-blue-100 transition-all group animate-in slide-in-from-bottom duration-500 ${getAnimDelayClass(idx, 150)}`}>
-                <div className="p-8">
-                  <div className="flex justify-between items-start mb-6">
-                    <div className="flex items-center gap-5">
-                      <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-[28px] flex items-center justify-center text-4xl shadow-inner group-hover:scale-105 transition-transform">
-                        {crop?.icon || '🌾'}
-                      </div>
-                      <div>
-                        <h4 className="font-black text-xl text-gray-900 leading-none">{offer.crop}</h4>
-                        <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mt-1.5 flex items-center gap-1.5">
-                          <i className="fas fa-user-tie text-blue-400"></i> {offer.buyer}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-1">{offer.timestamp}</p>
-                      <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest">Active</span>
-                    </div>
-                  </div>
 
-                  <div className="bg-gray-50/50 rounded-3xl p-6 border border-gray-50 flex justify-between items-center mb-8">
-                    <div>
-                      <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">Bid Price</p>
-                      <p className="text-3xl font-black text-gray-900 tracking-tighter">₹{offer.price}<span className="text-xs ml-1">/kg</span></p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">Requested Qty</p>
-                      <p className="text-xl font-black text-gray-700">{offer.qty} KG</p>
-                    </div>
-                  </div>
+          <div className="flex justify-center mb-6">
+            <div className="w-24 h-24 rounded-full overflow-hidden border-4 border-gray-100 shadow-sm relative">
+              {tempProfile.profilePhoto ? (
+                <img src={tempProfile.profilePhoto} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-green-50 flex items-center justify-center text-3xl text-green-600 font-black">
+                  {tempProfile.name?.charAt(0)}
+                </div>
+              )}
+            </div>
+          </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <button
-                      onClick={() => {
-                        geminiService.speak(`Opening negotiation with ${offer.buyer} for your ${offer.crop}.`);
-                        onViewOffers?.(offer);
-                      }}
-                      className="bg-gray-900 text-white py-5 rounded-[24px] font-black uppercase text-[10px] tracking-[0.2em] shadow-xl shadow-gray-100 active:scale-95 transition-all flex items-center justify-center gap-3"
-                    >
-                      <i className="fas fa-comments-dollar text-lg"></i>
-                      Negotiate Bid
-                    </button>
-                    <button className="bg-white border-2 border-gray-100 text-gray-400 py-5 rounded-[24px] font-black uppercase text-[10px] tracking-[0.2em] active:scale-95 transition-all">
-                      Reject Offer
-                    </button>
-                  </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Full Name</label>
+              <div className="bg-gray-50 p-4 rounded-xl">
+                <p className="font-bold text-lg">{tempProfile.name || 'Not specified'}</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Gender</label>
+              <div className="bg-gray-50 p-4 rounded-xl">
+                <p className="font-bold text-lg">{tempProfile.gender || 'Not specified'}</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Email Address</label>
+              <div className="bg-gray-50 p-4 rounded-xl">
+                <p className="font-bold text-lg">{tempProfile.email || 'Not provided'}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Location Information */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 px-1">
+            <i className="fas fa-location-dot text-green-500"></i>
+            <p className="text-[11px] font-black uppercase tracking-widest text-gray-900">Location Details</p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="bg-gray-50 p-4 rounded-xl">
+              <p className="font-medium">{tempProfile.address || 'Address not provided'}</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Village/City</label>
+                <div className="bg-gray-50 p-4 rounded-xl">
+                  <p className="font-bold">{tempProfile.village || 'Not specified'}</p>
                 </div>
               </div>
-            );
-          })
-        )}
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">District</label>
+                <div className="bg-gray-50 p-4 rounded-xl">
+                  <p className="font-bold">{tempProfile.district || 'Not specified'}</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">State</label>
+                <div className="bg-gray-50 p-4 rounded-xl">
+                  <p className="font-bold">{tempProfile.state || 'Not specified'}</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Pincode</label>
+                <div className="bg-gray-50 p-4 rounded-xl">
+                  <p className="font-bold">{tempProfile.pincode || 'Not specified'}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Edit Button */}
+        <div className="pt-4 border-t border-gray-100">
+          <button
+            onClick={() => setInternalView('editProfile')}
+            className="w-full bg-green-600 text-white py-4 rounded-xl font-bold text-lg uppercase tracking-widest shadow-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
+          >
+            <i className="fas fa-edit"></i>
+            Edit Profile
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -568,11 +1083,56 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
         >
           <i className="fas fa-chevron-left"></i>
         </button>
-        <h2 className="font-black text-2xl tracking-tight">{t('edit_profile')}</h2>
+        <h2 className="font-black text-2xl tracking-tight">{t('farmer.edit_profile')}</h2>
       </div>
 
       <div className="bg-white p-8 rounded-[40px] shadow-sm border border-gray-100 space-y-8">
         <div className="space-y-6">
+
+          {/* Profile Photo Upload */}
+          <div className="flex justify-center">
+            <div className="relative group cursor-pointer">
+              <div className="w-28 h-28 rounded-full overflow-hidden border-4 border-gray-100 shadow-sm relative bg-gray-50">
+                {tempProfile.profilePhoto ? (
+                  <img src={tempProfile.profilePhoto} alt="Profile" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-4xl text-gray-300">
+                    <i className="fas fa-user"></i>
+                  </div>
+                )}
+                {/* Overlay on hover */}
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <i className="fas fa-camera text-white text-2xl"></i>
+                </div>
+              </div>
+              <input
+                type="file"
+                accept="image/*"
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                onChange={handleProfilePhotoUpload}
+              />
+              {tempProfile.profilePhoto ? (
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (window.confirm("Remove profile photo?")) {
+                      setTempProfile(prev => ({ ...prev, profilePhoto: '' }));
+                      onUpdateProfile({ profilePhoto: '' });
+                      geminiService.speak("Profile photo removed.");
+                    }
+                  }}
+                  className="absolute bottom-0 right-0 w-8 h-8 bg-red-500 rounded-full text-white shadow-md flex items-center justify-center z-20 hover:bg-red-600 transition-colors"
+                >
+                  <i className="fas fa-trash text-xs"></i>
+                </button>
+              ) : (
+                <button className="absolute bottom-0 right-0 w-8 h-8 bg-green-500 rounded-full text-white shadow-md flex items-center justify-center pointer-events-none">
+                  <i className="fas fa-pen text-xs"></i>
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="space-y-2">
             <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Full Name</label>
             <div className="relative">
@@ -623,15 +1183,56 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
             <i className="fas fa-location-dot text-green-500"></i>
             <p className="text-[11px] font-black uppercase tracking-widest text-gray-900">Location Details</p>
           </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Location Selection</label>
+            <div className="rounded-2xl overflow-hidden border border-gray-100">
+              <LocationPicker
+                value={{
+                  latitude: tempProfile.latitude,
+                  longitude: tempProfile.longitude,
+                  fullAddress: tempProfile.address,
+                  city: tempProfile.village,
+                  district: tempProfile.district,
+                  state: tempProfile.state,
+                  pincode: tempProfile.pincode
+                }}
+                onChange={(loc) => {
+                  setTempProfile(prev => ({
+                    ...prev,
+                    address: loc.fullAddress || '',
+                    village: loc.city || loc.town || loc.village || '',
+                    district: loc.district || '',
+                    state: loc.state || '',
+                    pincode: loc.pincode || '',
+                    latitude: loc.latitude,
+                    longitude: loc.longitude
+                  }));
+                }}
+                pickupLocation={undefined}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Street Address</label>
+            <input
+              type="text"
+              value={tempProfile.address}
+              onChange={(e) => setTempProfile(prev => ({ ...prev, address: e.target.value }))}
+              className="w-full bg-gray-50 border-0 p-4 rounded-xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+              placeholder="House, Street, Area"
+            />
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Village</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Village/City</label>
               <input
                 type="text"
                 value={tempProfile.village}
                 onChange={(e) => setTempProfile(prev => ({ ...prev, village: e.target.value }))}
-                className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
-                aria-label="Village"
+                className="w-full bg-gray-50 border-0 p-4 rounded-xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+                placeholder="Village/City"
               />
             </div>
             <div className="space-y-2">
@@ -640,20 +1241,33 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
                 type="text"
                 value={tempProfile.district}
                 onChange={(e) => setTempProfile(prev => ({ ...prev, district: e.target.value }))}
-                className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
-                aria-label="District"
+                className="w-full bg-gray-50 border-0 p-4 rounded-xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+                placeholder="District"
               />
             </div>
           </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">State</label>
-            <input
-              type="text"
-              value={tempProfile.state}
-              onChange={(e) => setTempProfile(prev => ({ ...prev, state: e.target.value }))}
-              className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
-              aria-label="State"
-            />
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">State</label>
+              <input
+                type="text"
+                value={tempProfile.state}
+                onChange={(e) => setTempProfile(prev => ({ ...prev, state: e.target.value }))}
+                className="w-full bg-gray-50 border-0 p-4 rounded-xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+                placeholder="State"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Pincode</label>
+              <input
+                type="text"
+                value={tempProfile.pincode}
+                onChange={(e) => setTempProfile(prev => ({ ...prev, pincode: e.target.value }))}
+                className="w-full bg-gray-50 border-0 p-4 rounded-xl font-bold focus:ring-2 focus:ring-green-50 outline-none"
+                placeholder="Pincode"
+              />
+            </div>
           </div>
         </div>
 
@@ -667,262 +1281,444 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
     </div>
   );
 
-  const renderAddEditListing = () => (
-    <div className="space-y-6 pb-20 animate-in fade-in duration-500">
-      <div className="flex items-center gap-4 mb-2">
-        <button onClick={() => { setInternalView('default'); setEditListingId(null); }} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400" aria-label="Back">
-          <i className="fas fa-chevron-left"></i>
-        </button>
-        <h2 className="font-black text-2xl tracking-tight">{editListingId ? t('edit') : t('add_crop')}</h2>
-      </div>
 
-      <div className="bg-white p-6 rounded-[40px] shadow-sm border border-gray-100 space-y-8">
-        {/* Crop Selection */}
-        <div className="space-y-3">
-          <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Select Harvest Type</label>
-          <div className="grid grid-cols-3 gap-2">
-            {cropsForUi.map(crop => (
-              <button
-                key={crop.id}
-                onClick={() => setNewListing(prev => ({ ...prev, cropId: crop.id }))}
-                className={`p-4 rounded-3xl border-2 transition-all flex flex-col items-center gap-2 group ${newListing.cropId === crop.id ? 'border-green-600 bg-green-50 shadow-md shadow-green-100' : 'border-gray-50 bg-gray-50/30'}`}
-              >
-                <span className={`text-2xl transition-transform group-active:scale-125 ${newListing.cropId === crop.id ? 'scale-110' : ''}`}>{crop.icon}</span>
-                <span className={`text-[9px] font-black uppercase tracking-tighter ${newListing.cropId === crop.id ? 'text-green-700' : 'text-gray-400'}`}>{crop.name}</span>
-              </button>
-            ))}
-          </div>
+  const renderAddEditListing = () => {
+    const qualitySummary = imageVerification?.paragraphSummary || imageVerification?.summary || imageVerification?.detailedDescription || '';
+    const detectedCropName = imageVerification?.detectedCrop || (imageVerification?.detectedCropId ? getCropNameById(imageVerification.detectedCropId) : '');
+    return (
+      <div className="space-y-6 pb-20 animate-in fade-in duration-500">
+        <div className="flex items-center gap-4 mb-2">
+          <button onClick={() => { setInternalView('default'); setEditListingId(null); }} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400" aria-label="Back">
+            <i className="fas fa-chevron-left"></i>
+          </button>
+          <h2 className="font-black text-2xl tracking-tight">{editListingId ? t('common.edit') : t('farmer.add_crop')}</h2>
         </div>
 
-        {/* Enhanced Image Upload Area */}
-        <div className="space-y-4">
-          <div className="flex justify-between items-center px-1">
-            <div className="flex items-center gap-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Harvest Photos</label>
-              <span className="bg-gray-100 px-2 py-0.5 rounded text-[8px] font-black text-gray-500 uppercase">{newListing.images.length}/6</span>
-            </div>
-            {isAnalyzingPhoto && (
-              <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-1.5">
-                <i className="fas fa-sparkles animate-pulse"></i> AI Grading...
-              </span>
-            )}
-          </div>
-
-          <div
-            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={handleDrop}
-            className={`flex gap-4 overflow-x-auto no-scrollbar pb-4 pt-1 px-1 transition-all rounded-[36px] ${isDragging ? 'bg-green-50 ring-2 ring-green-400' : ''}`}
-          >
-            {/* Upload Button */}
-            {newListing.images.length < 6 && (
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="w-32 h-32 rounded-[40px] bg-gray-50 border-2 border-dashed border-gray-200 flex flex-col items-center justify-center gap-3 shrink-0 hover:bg-green-50 hover:border-green-400 transition-all active:scale-95 group"
-              >
-                <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-gray-300 group-hover:text-green-500 transition-colors shadow-sm">
-                  <i className="fas fa-camera text-xl"></i>
-                </div>
-                <div className="text-center">
-                  <p className="text-[8px] font-black text-gray-400 group-hover:text-green-600 uppercase">Add photo</p>
-                  <p className="text-[6px] font-bold text-gray-300 uppercase mt-0.5">Drag & Drop</p>
-                </div>
-              </button>
-            )}
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/*"
-              className="hidden"
-              onChange={handleImageUpload}
-              aria-label="Upload harvest photos"
-              title="Upload harvest photos"
-            />
-
-            {/* Preview List */}
-            {newListing.images.map((img, idx) => (
-              <div key={idx} className="relative w-32 h-32 rounded-[40px] overflow-hidden shrink-0 shadow-lg border-2 border-white animate-in zoom-in slide-in-from-right duration-300 group">
-                <img
-                  src={img}
-                  className="w-full h-full object-cover cursor-pointer transition-transform duration-500 group-hover:scale-110"
-                  alt={`Harvest ${idx}`}
-                  onClick={() => setPreviewImageUrl(img)}
-                />
-
-                {/* Image Overlay */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-
-                {/* Removal Button */}
+        <div className="bg-white p-6 rounded-[40px] shadow-sm border border-gray-100 space-y-8">
+          {/* Crop Selection */}
+          <div className="space-y-3">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Select Crop</label>
+            <div className="grid grid-cols-3 gap-2">
+              {cropsForUi.map(crop => (
                 <button
-                  onClick={(e) => { e.stopPropagation(); removeImage(idx); }}
-                  className="absolute top-2 right-2 w-8 h-8 bg-black/40 backdrop-blur-md text-white rounded-xl flex items-center justify-center text-[10px] shadow-lg border border-white/20 active:scale-75 transition-all hover:bg-red-500"
-                  aria-label="Remove photo"
+                  key={crop.id}
+                  onClick={() => {
+                    setImageValidationError(null);
+                    setImageVerificationError(null);
+                    setCropIdOverride(crop.id);
+                    setNewListing(prev => ({ ...prev, cropId: crop.id }));
+                  }}
+                  className={`p-4 rounded-3xl border-2 transition-all flex flex-col items-center gap-2 group ${newListing.cropId === crop.id ? 'border-green-600 bg-green-50 shadow-md shadow-green-100' : 'border-gray-50 bg-gray-50/30'}`}
                 >
-                  <i className="fas fa-trash-can"></i>
+                  <span className={`text-2xl transition-transform group-active:scale-125 ${newListing.cropId === crop.id ? 'scale-110' : ''}`}>{crop.icon}</span>
+                  <span className={`text-[9px] font-black uppercase tracking-tighter ${newListing.cropId === crop.id ? 'text-green-700' : 'text-gray-400'}`}>{crop.name}</span>
                 </button>
-
-                {/* Set as Primary Action */}
-                {idx !== 0 && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setAsPrimary(idx); }}
-                    className="absolute bottom-2 right-2 px-2 py-1 bg-white/20 backdrop-blur-md text-white rounded-lg text-[6px] font-black uppercase tracking-widest border border-white/20 opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    Set Main
-                  </button>
-                )}
-
-                {/* Primary Tag */}
-                {idx === 0 && (
-                  <div className="absolute bottom-3 left-3 bg-emerald-500 text-white px-2 py-0.5 rounded-lg text-[7px] font-black uppercase tracking-widest shadow-md flex items-center gap-1">
-                    <i className="fas fa-star text-[6px]"></i> Main
-                  </div>
-                )}
+              ))}
+            </div>
+            {imageVerification?.detectedCropId && (
+              <div className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-100 rounded-2xl px-4 py-3">
+                <div>
+                  <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Detected Crop</p>
+                  <p className="text-[11px] font-bold text-gray-700 mt-1">{detectedCropName || 'Detected from photos'}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setCropIdOverride(null);
+                    if (imageVerification?.detectedCropId) {
+                      setNewListing(prev => ({ ...prev, cropId: imageVerification.detectedCropId as any }));
+                    }
+                  }}
+                  className="shrink-0 bg-gray-900 text-white px-4 py-3 rounded-2xl text-[9px] font-black uppercase tracking-widest"
+                  aria-label="Use detected crop"
+                >
+                  Use Detected
+                </button>
               </div>
-            ))}
-
-            {newListing.images.length === 0 && !isAnalyzingPhoto && (
-              <div className="flex-grow min-w-[200px] h-32 border-2 border-dashed border-gray-100 rounded-[40px] flex items-center justify-center flex-col gap-2 bg-gray-50/50">
-                <i className="fas fa-images text-gray-200 text-2xl"></i>
-                <p className="text-[8px] font-black text-gray-300 uppercase tracking-widest">Upload your harvest photos</p>
-              </div>
+            )}
+            {cropIdOverride && (
+              <p className="text-[10px] font-bold text-gray-500 px-1">Manual crop selection applied.</p>
             )}
           </div>
 
-          <div className="bg-blue-50/50 p-4 rounded-3xl border border-blue-100 flex items-start gap-3">
-            <i className="fas fa-lightbulb text-blue-400 mt-1"></i>
-            <p className="text-[9px] font-bold text-blue-700 leading-relaxed uppercase">
-              TIP: Listings with bright, clear photos harvested in daylight receive up to 3x more bids.
-            </p>
-          </div>
-        </div>
-
-        {/* Quantity and Price */}
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Total Quantity</label>
-            <div className="relative">
-              <input
-                type="number"
-                value={newListing.quantity}
-                onChange={(e) => setNewListing(prev => ({ ...prev, quantity: e.target.value }))}
-                className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none text-lg"
-                placeholder="0"
-              />
-              <span className="absolute right-5 top-1/2 -translate-y-1/2 text-[10px] font-black text-gray-400 uppercase">KG</span>
+          {/* Enhanced Image Upload Area */}
+          <div className="space-y-4">
+            <div className="flex justify-between items-center px-1">
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Harvest Photos</label>
+                <span className="bg-gray-100 px-2 py-0.5 rounded text-[8px] font-black text-gray-500 uppercase">{newListing.images.length}/6</span>
+              </div>
+              {isAnalyzingPhoto && (
+                <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-1.5">
+                  <i className="fas fa-sparkles animate-pulse"></i> Analyzing...
+                </span>
+              )}
             </div>
-          </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Price per kg</label>
-            <div className="relative">
-              <span className="absolute left-5 top-1/2 -translate-y-1/2 font-black text-gray-400 text-lg">₹</span>
-              <input
-                type="number"
-                value={newListing.expectedPrice}
-                onChange={(e) => setNewListing(prev => ({ ...prev, expectedPrice: e.target.value }))}
-                className="w-full bg-gray-50 border-0 p-5 pl-10 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none text-lg"
-                placeholder="0"
-              />
-            </div>
-          </div>
-        </div>
+            {imageValidationError && (
+              <div className="px-1 -mt-2">
+                <p className="text-[10px] font-black text-red-600 uppercase tracking-widest">{imageValidationError}</p>
+              </div>
+            )}
 
-        {/* Harvest Date */}
-        <div className="space-y-2">
-          <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Harvest Date</label>
-          <div className="relative">
-            <i className="fas fa-calendar-days absolute left-5 top-1/2 -translate-y-1/2 text-gray-300"></i>
-            <input
-              type="date"
-              value={newListing.harvestDate}
-              onChange={(e) => setNewListing(prev => ({ ...prev, harvestDate: e.target.value }))}
-              className="w-full bg-gray-50 border-0 p-5 pl-14 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none"
-              aria-label="Harvest date"
-            />
-          </div>
-        </div>
-
-
-        {/* Quality Grade Selector */}
-        <div className="space-y-3">
-          <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Quality Grade</label>
-          <div className="bg-gray-50 border border-gray-100 rounded-3xl p-5 flex items-center justify-between">
-            <div>
-              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">AI Decided</p>
-              <p className="text-xl font-black text-gray-900 mt-1">{newListing.grade}</p>
-            </div>
-            <div className="text-right">
-              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Based on photos</p>
-              <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mt-1">Not editable</p>
-            </div>
-          </div>
-          <div className="bg-blue-50/50 p-4 rounded-3xl border border-blue-100 flex items-start gap-3">
-            <i className="fas fa-info-circle text-blue-400 mt-1"></i>
-            <div className="text-[9px] font-bold text-blue-700 leading-relaxed">
-              <p className="uppercase mb-1">Quality Standards:</p>
-              <p className="opacity-80">Premium: Export quality • Good: Retail quality • Average: Local market • Fair: Processing grade</p>
-            </div>
-          </div>
-        </div>
-
-
-        <button
-          onClick={handlePublish}
-          disabled={!newListing.quantity || !newListing.expectedPrice || newListing.images.length === 0}
-          className="w-full bg-green-600 text-white py-6 rounded-3xl font-black text-lg uppercase tracking-widest shadow-2xl shadow-green-100 active:scale-95 transition-all disabled:opacity-50 disabled:grayscale"
-        >
-          {editListingId ? 'Save Changes' : 'Publish Harvest'}
-        </button>
-      </div>
-
-      {/* Image Preview Modal */}
-      {previewImageUrl && (
-        <div className="fixed inset-0 z-[200] bg-black/90 backdrop-blur-xl flex flex-col p-6 animate-in fade-in duration-300">
-          <div className="flex justify-end mb-6">
-            <button
-              onClick={() => setPreviewImageUrl(null)}
-              className="w-12 h-12 rounded-full bg-white/10 text-white flex items-center justify-center text-xl hover:bg-white/20 active:scale-90 transition-all"
-              aria-label="Close preview"
+            <div
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              className={`flex gap-4 overflow-x-auto no-scrollbar pb-4 pt-1 px-1 transition-all rounded-[36px] ${isDragging ? 'bg-green-50 ring-2 ring-green-400' : ''}`}
             >
-              <i className="fas fa-times"></i>
-            </button>
+              {/* Upload Button */}
+              {newListing.images.length < 6 && (
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-32 h-32 rounded-[40px] bg-gray-50 border-2 border-dashed border-gray-200 flex flex-col items-center justify-center gap-3 shrink-0 hover:bg-green-50 hover:border-green-400 transition-all active:scale-95 group"
+                >
+                  <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-gray-300 group-hover:text-green-500 transition-colors shadow-sm">
+                    <i className="fas fa-camera text-xl"></i>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-[8px] font-black text-gray-400 group-hover:text-green-600 uppercase">Add photo</p>
+                    <p className="text-[6px] font-bold text-gray-300 uppercase mt-0.5">Drag & Drop</p>
+                  </div>
+                </button>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*"
+                className="hidden"
+                onChange={handleImageUpload}
+                aria-label="Upload crop photos"
+                title="Upload crop photos"
+              />
+
+              {/* Preview List */}
+              {newListing.images.map((img, idx) => (
+                <div key={idx} className="relative w-32 h-32 rounded-[40px] overflow-hidden shrink-0 shadow-lg border-2 border-white animate-in zoom-in slide-in-from-right duration-300 group">
+                  <img
+                    src={img}
+                    className="w-full h-full object-cover cursor-pointer transition-transform duration-500 group-hover:scale-110"
+                    alt={`Harvest ${idx}`}
+                    onClick={() => setPreviewImageUrl(img)}
+                  />
+
+                  {/* Image Overlay */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openCropper(idx); }}
+                    className="absolute top-2 left-2 w-8 h-8 bg-black/40 backdrop-blur-md text-white rounded-xl flex items-center justify-center text-[10px] shadow-lg border border-white/20 active:scale-75 transition-all hover:bg-white/30"
+                    aria-label="Adjust crop"
+                  >
+                    <i className="fas fa-crop-simple"></i>
+                  </button>
+
+                  {/* Removal Button */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); removeImage(idx); }}
+                    className="absolute top-2 right-2 w-8 h-8 bg-black/40 backdrop-blur-md text-white rounded-xl flex items-center justify-center text-[10px] shadow-lg border border-white/20 active:scale-75 transition-all hover:bg-red-500"
+                    aria-label="Remove photo"
+                  >
+                    <i className="fas fa-trash-can"></i>
+                  </button>
+
+                  {/* Set as Primary Action */}
+                  {idx !== 0 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setAsPrimary(idx); }}
+                      className="absolute bottom-2 right-2 px-2 py-1 bg-white/20 backdrop-blur-md text-white rounded-lg text-[6px] font-black uppercase tracking-widest border border-white/20 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      Set Main
+                    </button>
+                  )}
+
+                  {/* Primary Tag */}
+                  {idx === 0 && (
+                    <div className="absolute bottom-3 left-3 bg-emerald-500 text-white px-2 py-0.5 rounded-lg text-[7px] font-black uppercase tracking-widest shadow-md flex items-center gap-1">
+                      <i className="fas fa-star text-[6px]"></i> Main
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {newListing.images.length === 0 && !isAnalyzingPhoto && (
+                <div className="flex-grow min-w-[200px] h-32 border-2 border-dashed border-gray-100 rounded-[40px] flex items-center justify-center flex-col gap-2 bg-gray-50/50">
+                  <i className="fas fa-images text-gray-200 text-2xl"></i>
+                  <p className="text-[8px] font-black text-gray-300 uppercase tracking-widest">Upload your crop photos</p>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-blue-50/50 p-4 rounded-3xl border border-blue-100 flex items-start gap-3">
+              <i className="fas fa-lightbulb text-blue-400 mt-1"></i>
+              <p className="text-[9px] font-bold text-blue-700 leading-relaxed uppercase">
+                TIP: Listings with bright, clear photos harvested in daylight receive up to 3x more bids.
+              </p>
+            </div>
           </div>
-          <div className="flex-grow flex items-center justify-center relative">
-            <img
-              src={previewImageUrl}
-              className="max-w-full max-h-[70vh] rounded-[40px] shadow-2xl object-contain animate-in zoom-in-95 duration-500"
-              alt="Preview Large"
-            />
+
+          {/* Summary */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center px-1">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Summary</label>
+              {isVerifyingImages && (
+                <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-1.5">
+                  <i className="fas fa-sparkles animate-pulse"></i> Verifying...
+                </span>
+              )}
+            </div>
+
+            {imageVerificationError && (
+              <div className="px-1 -mt-2">
+                <p className="text-[10px] font-black text-red-600 uppercase tracking-widest">{imageVerificationError}</p>
+              </div>
+            )}
+
+            <div className="bg-gray-50 border border-gray-100 rounded-3xl p-5 space-y-4">
+              {newListing.images.length === 0 && !imageVerification && (
+                <div className="bg-white rounded-2xl p-4 border border-gray-100">
+                  <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Upload Photos</p>
+                  <p className="text-[11px] font-bold text-gray-700 mt-2 leading-relaxed">Upload crop photos to auto-detect crop, grade, and generate image summary.</p>
+                </div>
+              )}
+
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-white rounded-2xl p-4 border border-gray-100">
+                  <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Detected Grade</p>
+                  <p className="text-base font-black text-gray-900 mt-1">{imageVerification?.grade || newListing.grade}</p>
+                  {imageVerification?.gradeReason && (
+                    <p className="text-[10px] font-bold text-gray-500 mt-2 leading-snug">{imageVerification.gradeReason}</p>
+                  )}
+                </div>
+                <div className="bg-white rounded-2xl p-4 border border-gray-100">
+                  <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Status</p>
+                  <p className="text-base font-black text-gray-900 mt-1">{imageVerification?.status || 'PENDING'}</p>
+                  {imageVerification?.detectedCropId && imageVerification?.detectedCropId !== newListing.cropId && (
+                    <p className="text-[10px] font-bold text-gray-500 mt-2 leading-snug">Crop updated from image.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 border border-gray-100">
+                <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Quality Summary</p>
+                <p className="text-lg font-bold text-gray-700 mt-2 leading-relaxed whitespace-pre-line">
+                  {qualitySummary || 'Upload crop photos to generate a quality summary.'}
+                </p>
+              </div>
+
+              {imageVerification?.textSymbols && imageVerification.textSymbols.length > 0 && (
+                <div className="bg-white rounded-2xl p-4 border border-gray-100">
+                  <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Text / Symbols</p>
+                  <p className="text-[11px] font-bold text-gray-700 mt-2 leading-relaxed">{imageVerification.textSymbols.join(', ')}</p>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="py-10 text-center">
-            <p className="text-white/60 text-[10px] font-black uppercase tracking-[0.3em] mb-4">Inspection View</p>
-            <div className="flex justify-center gap-4">
+          {/* Quantity and Price */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Total Quantity</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  value={newListing.quantity}
+                  onChange={(e) => setNewListing(prev => ({ ...prev, quantity: e.target.value }))}
+                  className="w-full bg-gray-50 border-0 p-5 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none text-lg"
+                  placeholder="0"
+                />
+                <span className="absolute right-5 top-1/2 -translate-y-1/2 text-[10px] font-black text-gray-400 uppercase">KG</span>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Price per kg</label>
+              <div className="relative">
+                <span className="absolute left-5 top-1/2 -translate-y-1/2 font-black text-gray-400 text-lg">₹</span>
+                <input
+                  type="number"
+                  value={newListing.expectedPrice}
+                  onChange={(e) => setNewListing(prev => ({ ...prev, expectedPrice: e.target.value }))}
+                  className="w-full bg-gray-50 border-0 p-5 pl-10 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none text-lg"
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Harvest Date</label>
+              <div className="relative">
+                <i className="fas fa-calendar-days absolute left-5 top-1/2 -translate-y-1/2 text-gray-300"></i>
+                <input
+                  type="date"
+                  value={newListing.harvestDate}
+                  onChange={(e) => setNewListing(prev => ({ ...prev, harvestDate: e.target.value }))}
+                  className="w-full bg-gray-50 border-0 p-5 pl-14 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none"
+                  aria-label="Harvest date"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-1">Sale Date</label>
+              <div className="relative">
+                <i className="fas fa-calendar-check absolute left-5 top-1/2 -translate-y-1/2 text-gray-300"></i>
+                <input
+                  type="date"
+                  value={newListing.saleDate}
+                  onChange={(e) => setNewListing(prev => ({ ...prev, saleDate: e.target.value }))}
+                  className="w-full bg-gray-50 border-0 p-5 pl-14 rounded-2xl font-black focus:ring-2 focus:ring-green-500 outline-none"
+                  aria-label="Sale date"
+                />
+              </div>
+            </div>
+          </div>
+
+
+
+
+
+          <button
+            onClick={handlePublish}
+            disabled={!newListing.quantity || !newListing.expectedPrice || newListing.images.length === 0 || isAnalyzingPhoto || isVerifyingImages || !!imageValidationError}
+            className="w-full bg-green-600 text-white py-6 rounded-3xl font-black text-lg uppercase tracking-widest shadow-2xl shadow-green-100 active:scale-95 transition-all disabled:opacity-50 disabled:grayscale"
+          >
+            {editListingId ? 'Save Changes' : 'Publish Harvest'}
+          </button>
+        </div>
+
+        {/* Image Preview Modal */}
+        {previewImageUrl && (
+          <div className="fixed inset-0 z-[200] bg-gradient-to-br from-[#f8f9fa]/95 via-white/85 to-[#e9ecef]/95 backdrop-blur-xl flex flex-col p-6 animate-in fade-in duration-300">
+            <div className="flex justify-end mb-6">
               <button
                 onClick={() => setPreviewImageUrl(null)}
-                className="bg-white text-gray-900 px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px]"
+                className="w-12 h-12 rounded-full bg-white/10 text-white flex items-center justify-center text-xl hover:bg-white/20 active:scale-90 transition-all"
+                aria-label="Close preview"
               >
-                Close Preview
+                <i className="fas fa-times"></i>
               </button>
             </div>
+            <div className="flex-grow flex items-center justify-center relative">
+              <img
+                src={previewImageUrl}
+                className="max-w-full max-h-[70vh] rounded-[40px] shadow-2xl object-contain animate-in zoom-in-95 duration-500"
+                alt="Preview Large"
+              />
+            </div>
+            <div className="py-10 text-center">
+              <p className="text-white/60 text-[10px] font-black uppercase tracking-[0.3em] mb-4">Inspection View</p>
+              <div className="flex justify-center gap-4">
+                <button
+                  onClick={() => setPreviewImageUrl(null)}
+                  className="bg-white text-gray-900 px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px]"
+                >
+                  Close Preview
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
-    </div>
-  );
+        )}
+
+        {cropperIndex !== null && rawListingImages[cropperIndex] && (
+          <div className="fixed inset-0 z-[210] bg-black/70 backdrop-blur-md flex flex-col p-6 animate-in fade-in duration-200">
+            <div className="flex justify-between items-center mb-4">
+              <p className="text-white text-[10px] font-black uppercase tracking-[0.3em]">Adjust Crop</p>
+              <button
+                onClick={() => { setCropperIndex(null); setIsDraggingCrop(false); setDragStart(null); }}
+                className="w-12 h-12 rounded-full bg-white/10 text-white flex items-center justify-center text-xl hover:bg-white/20 active:scale-90 transition-all"
+                aria-label="Close cropper"
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+
+            <div className="flex-grow flex items-center justify-center">
+              <div
+                ref={cropperContainerRef}
+                className="relative w-full max-w-md aspect-square rounded-[32px] overflow-hidden bg-black/30 border border-white/10"
+                onMouseMove={(e) => {
+                  if (!isDraggingCrop || !dragStart || !cropperContainerRef.current) return;
+                  const rect = cropperContainerRef.current.getBoundingClientRect();
+                  const dx = (e.clientX - dragStart.x) / rect.width;
+                  const dy = (e.clientY - dragStart.y) / rect.height;
+                  const size = cropperRect.size;
+                  const x = Math.max(0, Math.min(1 - size, dragStart.rectX + dx));
+                  const y = Math.max(0, Math.min(1 - size, dragStart.rectY + dy));
+                  setCropperRect(prev => ({ ...prev, x, y }));
+                }}
+                onMouseUp={() => { setIsDraggingCrop(false); setDragStart(null); }}
+                onMouseLeave={() => { setIsDraggingCrop(false); setDragStart(null); }}
+              >
+                <img src={rawListingImages[cropperIndex]} className="absolute inset-0 w-full h-full object-cover" alt="Crop preview" />
+                <div className="absolute inset-0 bg-black/35"></div>
+
+                <div
+                  ref={cropperRectRef}
+                  className="absolute border-2 border-white rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.35)] cursor-move cropper-rect"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setIsDraggingCrop(true);
+                    setDragStart({ x: e.clientX, y: e.clientY, rectX: cropperRect.x, rectY: cropperRect.y });
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 bg-white/10 rounded-3xl p-4 border border-white/10">
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-white/80 text-[9px] font-black uppercase tracking-widest">Crop Size</p>
+                <p className="text-white text-[10px] font-black uppercase tracking-widest">{Math.round(cropperRect.size * 100)}%</p>
+              </div>
+              <input
+                type="range"
+                min={0.2}
+                max={1}
+                step={0.01}
+                value={cropperRect.size}
+                onChange={(e) => {
+                  const size = Math.max(0.2, Math.min(1, Number(e.target.value)));
+                  const x = Math.max(0, Math.min(1 - size, cropperRect.x));
+                  const y = Math.max(0, Math.min(1 - size, cropperRect.y));
+                  setCropperRect({ x, y, size });
+                }}
+                className="w-full mt-3"
+                aria-label="Crop size"
+              />
+
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                <button
+                  onClick={() => { setCropperIndex(null); setIsDraggingCrop(false); setDragStart(null); }}
+                  className="bg-white/10 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] border border-white/10"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => cropperIndex !== null && applyCropForIndex(cropperIndex)}
+                  className="bg-white text-gray-900 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px]"
+                >
+                  Save Crop
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderHome = () => (
     <div className="space-y-8">
-      <div className="bg-gray-900 text-white p-8 rounded-[40px] shadow-2xl relative overflow-hidden">
+      <div className="bg-gray-900 text-white p-6 md:p-8 rounded-3xl md:rounded-[40px] shadow-2xl relative overflow-hidden">
         <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-green-400 mb-2">{t('earnings_balance')}</p>
-          <h2 className="text-4xl font-black mb-6 tracking-tighter">₹{totalEarned.toLocaleString()}</h2>
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-green-400 mb-2">{t('common.earnings_balance')}</p>
+          <h2 className="text-3xl md:text-4xl font-black mb-6 tracking-tighter">₹{totalEarned.toLocaleString()}</h2>
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white/10 p-4 rounded-2xl border border-white/5">
-              <p className="text-[9px] font-black uppercase opacity-40 mb-1">{t('volume_sold')}</p>
+              <p className="text-[9px] font-black uppercase opacity-40 mb-1">{t('common.volume_sold')}</p>
               <p className="text-lg font-black">{totalVolume} kg</p>
             </div>
             <div className="bg-white/10 p-4 rounded-2xl border border-white/5">
-              <p className="text-[9px] font-black uppercase opacity-40 mb-1">{t('pending')}</p>
+              <p className="text-[9px] font-black uppercase opacity-40 mb-1">{t('common.pending')}</p>
               <p className="text-lg font-black text-amber-400">₹{pendingPayments.toLocaleString()}</p>
             </div>
           </div>
@@ -932,8 +1728,12 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
 
       <div className="bg-white p-6 rounded-[32px] shadow-sm border border-gray-100 flex items-center justify-between">
         <div className="flex items-center gap-4 min-w-0">
-          <div className="w-14 h-14 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center text-2xl font-black shrink-0">
-            {user.name.charAt(0)}
+          <div className="w-14 h-14 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center text-2xl font-black shrink-0 overflow-hidden relative border border-green-100">
+            {user.profilePhoto ? (
+              <img src={user.profilePhoto} alt={user.name} className="w-full h-full object-cover" />
+            ) : (
+              user.name.charAt(0)
+            )}
           </div>
           <div className="min-w-0">
             <h3 className="font-black text-gray-900 leading-tight truncate">{user.name}</h3>
@@ -943,10 +1743,10 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
           </div>
         </div>
         <button
-          onClick={() => setInternalView('editProfile')}
+          onClick={() => setInternalView('viewProfile')}
           className="bg-gray-50 text-gray-500 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest hover:text-green-600 transition-colors"
         >
-          {t('edit_profile')}
+          {t('farmer.edit_profile')}
         </button>
       </div>
 
@@ -1006,8 +1806,9 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
                   </button>
                   <button
                     onClick={() => {
-                      const crop = CROPS.find(c => c.name.toLowerCase() === rec.cropName.toLowerCase());
+                      const crop = cropsForUi.find(c => c.name.toLowerCase() === rec.cropName.toLowerCase());
                       if (crop) setNewListing(prev => ({ ...prev, cropId: crop.id }));
+                      setNewListing(prev => ({ ...prev, saleDate: new Date().toISOString().split('T')[0] }));
                       setInternalView('add');
                     }}
                     className="text-[9px] font-black text-gray-900 uppercase tracking-widest border-b-2 border-gray-100 hover:border-green-600 transition-all"
@@ -1027,7 +1828,7 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
       </div>
 
       <div className="space-y-5">
-        <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-gray-400 px-1">{t('tips_for_success')}</h3>
+        <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-gray-400 px-1">{t('common.tips_for_success')}</h3>
         <div className="space-y-4 md:space-y-0 md:grid md:grid-cols-3 md:gap-4">
           {tipsForSuccess.map((tip) => (
             <div key={tip.id} className={`p-6 rounded-[32px] border-2 shadow-sm transition-all hover:shadow-md ${tip.color} flex gap-5 relative overflow-hidden group`}>
@@ -1043,17 +1844,22 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
           ))}
         </div>
       </div>
+
+      <WeatherWidget
+        location={user.location}
+        coords={user.location?.coordinates || { lat: 16.3067, lng: 80.4365 }}
+      />
     </div>
   );
 
   const renderEarnings = () => (
     <div className="space-y-8 pb-20 px-1 animate-in fade-in duration-500">
-      <div className="bg-gray-900 text-white p-8 rounded-[48px] shadow-2xl relative overflow-hidden border border-white/5">
+      <div className="bg-gray-900 text-white p-6 md:p-8 rounded-[32px] md:rounded-[48px] shadow-2xl relative overflow-hidden border border-white/5">
         <div className="relative z-10">
           <div className="flex justify-between items-start mb-6">
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.25em] text-green-400 mb-2">Total Accumulated Revenue</p>
-              <h2 className="text-5xl font-black tracking-tighter">₹{totalEarned.toLocaleString()}</h2>
+              <h2 className="text-4xl md:text-5xl font-black tracking-tighter">₹{totalEarned.toLocaleString()}</h2>
             </div>
             <div className="w-16 h-16 bg-white/10 rounded-3xl flex items-center justify-center backdrop-blur-md border border-white/10">
               <i className="fas fa-sack-dollar text-2xl text-green-400"></i>
@@ -1164,27 +1970,47 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
     return renderAddEditListing();
   }
 
-  if (internalView === 'editProfile' || activeTab === 'account') {
+  if (internalView === 'editProfile') {
     return renderProfileEditor();
   }
 
+  if (internalView === 'viewProfile' || activeTab === 'account') {
+    return renderProfileViewer();
+  }
+
   return (
-    <div className="p-4 pt-6 w-full mx-auto pb-24 md:pb-8 h-full relative">
+    <div className="md:p-4 pt-1 w-full mx-auto pb-24 md:pb-8 h-full relative">
       {(activeTab === 'home' || !activeTab) && renderHome()}
-      {activeTab === 'orders' && <FarmerOrdersView />}
+      {activeTab === 'orders' && (
+        <FarmerOrdersView />
+      )}
       {activeTab === 'earnings' && renderEarnings()}
-      {activeTab === 'chats' && renderOffers()}
+
       {activeTab === 'listings' && (
         <div className="space-y-6 pb-20">
           <div className="flex justify-between items-center px-1 mb-6">
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">{t('my_listings')}</h3>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">{t('farmer.my_listings')}</h3>
             <button
-              onClick={() => { setInternalView('add'); setEditListingId(null); setNewListing({ cropId: '1', quantity: '', unit: 'kg', expectedPrice: '', grade: 'Premium', harvestDate: new Date().toISOString().split('T')[0], images: [] }); }}
+              onClick={() => { setInternalView('add'); setEditListingId(null); setRawListingImages([]); setNewListing({ cropId: '1', harvestType: HarvestType.HARVESTED_CROP, quantity: '', unit: 'kg', expectedPrice: '', grade: 'Premium', harvestDate: new Date().toISOString().split('T')[0], saleDate: new Date().toISOString().split('T')[0], images: [] }); }}
               className="bg-black text-white px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all"
             >
-              <i className="fas fa-plus mr-2"></i> {t('add_listing')}
+              <i className="fas fa-plus mr-2"></i> {t('farmer.add_listing')}
             </button>
           </div>
+
+          {listingsLoadError && (
+            <div className="bg-red-50 border border-red-100 p-4 rounded-3xl">
+              <p className="text-[10px] font-black text-red-700 uppercase tracking-widest">{listingsLoadError}</p>
+              <div className="flex gap-3 mt-3">
+                <button onClick={loadMyListings} className="bg-white px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest text-red-700 border border-red-200">
+                  Retry
+                </button>
+                <button onClick={() => (window.location.href = '/login')} className="bg-red-600 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest text-white">
+                  Login
+                </button>
+              </div>
+            </div>
+          )}
 
           {listings.length === 0 ? (
             <div className="text-center py-20 bg-gray-50 rounded-[40px] border-2 border-dashed border-gray-200">
@@ -1203,18 +2029,8 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               {listings.map(l => {
                 const priceInfo = getPriceCompetitiveness(l.expectedPrice, l.cropId, l.mandiPrice);
-                const offers = getOffersForListing(l.cropId);
-                const bestOffer = offers.length > 0 ? offers.reduce((prev, curr) => prev.price > curr.price ? prev : curr) : null;
-
                 return (
                   <div key={l.id} className="bg-white p-5 rounded-[40px] border shadow-sm hover:border-green-100 transition-all overflow-hidden relative">
-                    {offers.length > 0 && (
-                      <div className="absolute top-4 right-4 z-10">
-                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-green-500 text-white text-[10px] font-black animate-pulse">
-                          {offers.length}
-                        </span>
-                      </div>
-                    )}
 
                     <div className="flex items-center gap-5">
                       <div className="relative shrink-0">
@@ -1239,34 +2055,30 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
                           <span className={`${priceInfo.color} px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest flex items-center gap-1`}>
                             <i className={`fas ${priceInfo.icon}`}></i> {priceInfo.label}
                           </span>
-                          {bestOffer && (
-                            <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest flex items-center gap-1">
-                              <i className="fas fa-ranking-star"></i> High Bid: ₹{bestOffer.price}
-                            </span>
-                          )}
+
                         </div>
                       </div>
                     </div>
 
-                    {bestOffer && (
-                      <div className="mt-4 p-3 bg-gray-50 rounded-2xl border border-gray-100 flex justify-between items-center">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 bg-white rounded-xl flex items-center justify-center text-indigo-500 text-xs shadow-sm">
-                            <i className="fas fa-user-tag"></i>
-                          </div>
-                          <div>
-                            <p className="text-[7px] font-black text-gray-400 uppercase leading-none mb-1">Latest Offer</p>
-                            <p className="text-[10px] font-black text-gray-800 leading-none">{bestOffer.buyer}</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-[7px] font-black text-gray-400 uppercase leading-none mb-1">Proposed Price</p>
-                          <p className="text-[13px] font-black text-emerald-600 leading-none">₹{bestOffer.price}/kg</p>
-                        </div>
-                      </div>
-                    )}
+
 
                     <div className="mt-4 flex gap-2">
+                      <button
+                        onClick={async () => {
+                          const nextStatus = l.status === ListingStatus.PAUSED ? ListingStatus.AVAILABLE : ListingStatus.PAUSED;
+                          try {
+                            await listingAPI.update(l.id, { status: nextStatus });
+                            await loadMyListings();
+                            geminiService.speak(nextStatus === ListingStatus.PAUSED ? "Listing paused." : "Listing active.");
+                          } catch (err) {
+                            alert("Failed to update status");
+                          }
+                        }}
+                        className={`flex-1 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-colors ${l.status === ListingStatus.PAUSED ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
+                      >
+                        <i className={`fas ${l.status === ListingStatus.PAUSED ? 'fa-play' : 'fa-pause'} mr-2`}></i>
+                        {l.status === ListingStatus.PAUSED ? 'Resume' : 'Pause'}
+                      </button>
                       <button
                         onClick={() => handleEditClick(l)}
                         className="flex-1 bg-gray-50 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-gray-600 hover:bg-gray-100 transition-colors"
@@ -1288,102 +2100,11 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
         </div>
       )}
       {activeTab === 'prices' && (
-        <div className="space-y-8 pb-20 px-1 animate-in fade-in duration-500">
-          <div className="flex justify-between items-center px-1">
-            <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-gray-400">{t('market_prices')}</h3>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-              <p className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Live Benchmarking</p>
-            </div>
-          </div>
+        <MarketPricesView />
+      )}
 
-          <div className="grid gap-6 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-            {marketPrices.map((p, i) => {
-              const crop = CROPS.find(c => c.id === p.cropId);
-              const mspDiff = ((p.avg - p.msp) / p.msp) * 100;
-              const nearbyDiff = ((p.nearbyAvg - p.avg) / p.avg) * 100;
-
-              return (
-                <div key={i} className="bg-white rounded-[40px] shadow-sm border border-gray-100 overflow-hidden transition-all hover:shadow-xl hover:border-emerald-100 group">
-                  <div className="p-5 border-b border-gray-50 flex justify-between items-center bg-gray-50/10">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-2xl shadow-inner group-hover:bg-emerald-50 transition-colors">
-                        {crop?.icon}
-                      </div>
-                      <div>
-                        <h4 className="font-black text-lg text-gray-900 tracking-tight leading-none mb-1">{crop?.name}</h4>
-                        <div className="flex items-center gap-1.5">
-                          <i className="fas fa-map-marker-alt text-emerald-500 text-[10px]"></i>
-                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{p.mandi}</p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-2xl font-black text-gray-900 tracking-tighter leading-none mb-1">₹{p.avg}</p>
-                      <p className="text-[9px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50 px-3 py-1 rounded-full inline-block">Current Avg</p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 text-[10px]">
-                    <div className="p-5 border-r border-gray-50/50">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-black text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
-                          <i className="fas fa-shield-halved text-blue-500 text-[10px]"></i> MSP
-                        </span>
-                      </div>
-                      <p className="text-lg font-black text-gray-900 mb-1">₹{p.msp}<span className="text-[10px] ml-1 text-gray-400 font-bold">/kg</span></p>
-                      <div className={`font-black uppercase tracking-widest flex items-center gap-1 ${mspDiff >= 0 ? 'text-emerald-600' : 'text-amber-600'}`}>
-                        <i className={`fas ${mspDiff >= 0 ? 'fa-arrow-up' : 'fa-arrow-down'}`}></i>
-                        {Math.abs(Math.round(mspDiff))}% {mspDiff >= 0 ? 'up' : 'down'}
-                      </div>
-                    </div>
-
-                    <div className="p-5 bg-indigo-50/5">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-black text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
-                          <i className="fas fa-location-dot text-indigo-500 text-[10px]"></i> Nearby
-                        </span>
-                      </div>
-                      <p className="text-lg font-black text-gray-900 mb-1">₹{p.nearbyAvg}<span className="text-[10px] ml-1 text-gray-400 font-bold">/kg</span></p>
-                      <div className={`font-black uppercase tracking-widest flex items-center gap-1 ${nearbyDiff > 0 ? 'text-indigo-600' : 'text-gray-400'}`}>
-                        {nearbyDiff > 0 ? (
-                          <>
-                            <i className="fas fa-arrow-trend-up"></i>
-                            {Math.round(nearbyDiff)}% higher
-                          </>
-                        ) : (
-                          <>
-                            <i className="fas fa-check"></i>
-                            Best Price
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="p-4 bg-gray-50 flex justify-between items-center border-t border-gray-50/50">
-                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Updated {p.date}</p>
-                    <button
-                      onClick={() => geminiService.speak(`For ${crop?.name}, the current average price at ${p.mandi} is ₹${p.avg}.`)}
-                      className="text-emerald-600 text-[10px] font-black uppercase tracking-widest flex items-center gap-2 bg-white px-4 py-2 rounded-xl shadow-sm border border-gray-100 hover:bg-emerald-600 hover:text-white transition-all"
-                    >
-                      <i className="fas fa-volume-high"></i> Listen
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="bg-emerald-50 p-6 rounded-[32px] border-2 border-emerald-100 flex items-start gap-4 shadow-inner">
-            <div className="w-10 h-10 bg-white rounded-2xl flex items-center justify-center text-emerald-600 shrink-0 shadow-sm">
-              <i className="fas fa-info-circle"></i>
-            </div>
-            <p className="text-[11px] font-bold text-emerald-800 leading-relaxed uppercase tracking-wider">
-              Price data is sourced from real-time mandi feeds. Compare with MSP and nearby markets.
-            </p>
-          </div>
-        </div>
+      {activeTab === 'analytics' && (
+        <FarmerAnalytics deals={soldHistory.map(h => ({ ...h, crop: h.cropName })) as any} />
       )}
 
       {listingToDelete && (
@@ -1392,14 +2113,16 @@ const FarmerDashboard: React.FC<FarmerDashboardProps> = ({
             <h3 className="text-xl font-black text-gray-900 text-center mb-2">Delete Listing?</h3>
             <p className="text-[11px] text-gray-400 font-bold text-center uppercase tracking-widest mb-8">This action cannot be undone.</p>
             <div className="grid grid-cols-2 gap-4">
-              <button onClick={() => setListingToDelete(null)} className="bg-gray-50 py-4 rounded-3xl font-black uppercase text-[10px] tracking-widest text-gray-500">Cancel</button>
-              <button onClick={() => { confirmDeleteListing(); geminiService.speak("Listing deleted."); }} className="bg-red-600 text-white py-4 rounded-3xl font-black uppercase text-[10px] tracking-widest shadow-xl shadow-red-100 active:scale-95 transition-all">Delete</button>
+              <button disabled={isDeletingListing} onClick={() => setListingToDelete(null)} className="bg-gray-50 py-4 rounded-3xl font-black uppercase text-[10px] tracking-widest text-gray-500 disabled:opacity-50">Cancel</button>
+              <button disabled={isDeletingListing} onClick={confirmDeleteListing} className="bg-red-600 text-white py-4 rounded-3xl font-black uppercase text-[10px] tracking-widest shadow-xl shadow-red-100 active:scale-95 transition-all disabled:opacity-50 disabled:grayscale">
+                {isDeletingListing ? 'Deleting...' : 'Delete'}
+              </button>
             </div>
           </div>
         </div>
       )}
     </div>
   );
-};
+});
 
 export default FarmerDashboard;

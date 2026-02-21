@@ -8,6 +8,13 @@ interface StatusBadgeProps {
 
 const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'delivery' }) => {
     const getStatusConfig = () => {
+        const normalizedStatus = (() => {
+            if (type === 'listing') {
+                return status === 'SOLD' ? 'SOLD' : 'AVAILABLE';
+            }
+            return status;
+        })();
+
         const configs: Record<string, { color: string; bg: string; icon: string; label: string }> = {
             // Delivery statuses
             'WAITING_FOR_TRANSPORTER': {
@@ -66,6 +73,12 @@ const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'delivery' }) 
                 icon: '🚚',
                 label: 'In Delivery'
             },
+            'CANCELLED': {
+                color: 'text-red-700',
+                bg: 'bg-red-100',
+                icon: '❌',
+                label: 'Cancelled'
+            },
 
             // Listing statuses
             'AVAILABLE': {
@@ -90,7 +103,7 @@ const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'delivery' }) 
                 color: 'text-gray-700',
                 bg: 'bg-gray-100',
                 icon: '✔️',
-                label: 'Sold'
+                label: 'Sold Out'
             },
 
             // Negotiation statuses
@@ -114,11 +127,11 @@ const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'delivery' }) 
             }
         };
 
-        return configs[status] || {
+        return configs[normalizedStatus] || {
             color: 'text-gray-700',
             bg: 'bg-gray-100',
             icon: '•',
-            label: status
+            label: String(normalizedStatus)
         };
     };
 

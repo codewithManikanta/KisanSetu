@@ -7,7 +7,8 @@ const getAuthToken = () => {
 };
 
 // Helper function to make authenticated requests
-const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
+// Helper function to make authenticated requests
+export const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
     const token = getAuthToken();
     if (!token) {
         console.warn('Attempting fetchWithAuth without token for:', url);
@@ -24,17 +25,44 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: 'Request failed' }));
-        throw new Error(error.error || `HTTP ${response.status}`);
+        let body;
+        try {
+            body = await response.json();
+        } catch {
+            body = { error: `HTTP ${response.status}: ${response.statusText}` };
+        }
+        const message = body?.error || `HTTP ${response.status}`;
+        const err: any = new Error(message);
+        err.status = response.status;
+        err.body = body;
+        err.url = url;
+        if (response.status === 401) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+        }
+        throw err;
     }
 
     return response.json();
 };
 
 // Listing APIs
+// Listing APIs
 export const listingAPI = {
-    getAll: (params?: Record<string, string>) => {
-        const query = params ? '?' + new URLSearchParams(params).toString() : '';
+    getAll: (params?: {
+        cropId?: string;
+        location?: string;
+        minPrice?: string;
+        maxPrice?: string;
+        grade?: string;
+        status?: string;
+        search?: string;
+        state?: string;
+        radius?: string;
+        latitude?: string;
+        longitude?: string;
+    }) => {
+        const query = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
         return fetchWithAuth(`${API_URL}/listings${query}`);
     },
 
@@ -75,16 +103,62 @@ export const listingAPI = {
     },
 };
 
+export const aiAPI = {
+    verifyHarvest: (data: { cropName: string; selectedHarvestType: string; images: string[] }) => {
+        return fetchWithAuth(`${API_URL}/ai/verify-harvest`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    },
+
+    getMarketPrice: (crop: string, location: string) => {
+        const query = '?' + new URLSearchParams({ crop, location }).toString();
+        return fetchWithAuth(`${API_URL}/ai/market-price${query}`);
+    },
+
+    getRecommendations: (location: string) => {
+        const query = '?' + new URLSearchParams({ location }).toString();
+        return fetchWithAuth(`${API_URL}/ai/recommendations${query}`);
+    },
+
+    getQualityGrade: (images: string[]) => {
+        return fetchWithAuth(`${API_URL}/ai/quality-grade`, {
+            method: 'POST',
+            body: JSON.stringify({ images }),
+        });
+    },
+
+    verifyCrop: (data: { expectedCropName: string; images: string[] }) => {
+        return fetchWithAuth(`${API_URL}/ai/verify-crop`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    },
+
+    visionDetect: (data: { images: string[]; expectedCropName?: string }) => {
+        return fetchWithAuth(`${API_URL}/ai/vision-detect`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    },
+    gradeSummary: (data: { rawDescription: string }) => {
+        return fetchWithAuth(`${API_URL}/ai/grade-summary`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    },
+};
+
 // Cart APIs
 export const cartAPI = {
     get: () => {
         return fetchWithAuth(`${API_URL}/cart`);
     },
 
-    add: (listingId: string, quantity: number) => {
+    add: (listingId: string, quantity: number, negotiationId?: string) => {
         return fetchWithAuth(`${API_URL}/cart/add`, {
             method: 'POST',
-            body: JSON.stringify({ listingId, quantity }),
+            body: JSON.stringify({ listingId, quantity, negotiationId }),
         });
     },
 
@@ -101,10 +175,21 @@ export const cartAPI = {
         });
     },
 
-    checkout: (deliveryResponsibility: 'FARMER_ARRANGED' | 'BUYER_ARRANGED') => {
+    checkout: (deliveryResponsibility: 'FARMER_ARRANGED' | 'BUYER_ARRANGED', locationData?: {
+        deliveryLatitude: number | null;
+        deliveryLongitude: number | null;
+        deliveryAddress: string;
+        distanceKm: number | null;
+        estimatedDuration: number | null;
+        deliveryMode?: 'SELF_PICKUP' | 'ARRANGE_DELIVERY' | null;
+        paymentMethod?: string;
+        platformFee?: number;
+        farmerAmount?: number;
+        transporterAmount?: number;
+    }) => {
         return fetchWithAuth(`${API_URL}/cart/checkout`, {
             method: 'POST',
-            body: JSON.stringify({ deliveryResponsibility }),
+            body: JSON.stringify({ deliveryResponsibility, ...locationData }),
         });
     },
 };
@@ -126,10 +211,27 @@ export const orderAPI = {
         });
     },
 
-    setDeliveryOption: (id: string, deliveryResponsibility: string) => {
+    setDeliveryOption: (id: string, deliveryResponsibility: string, deliveryMode?: string) => {
         return fetchWithAuth(`${API_URL}/orders/${id}/delivery-option`, {
             method: 'PUT',
-            body: JSON.stringify({ deliveryResponsibility }),
+            body: JSON.stringify({ deliveryResponsibility, ...(deliveryMode && { deliveryMode }) }),
+        });
+    },
+
+    getSelfPickupDetails: (id: string) => {
+        return fetchWithAuth(`${API_URL}/orders/${id}/self-pickup-details`);
+    },
+
+    verifySelfPickupStep: (id: string, otp: string, step: 'VERIFY_FARMER' | 'VERIFY_BUYER') => {
+        return fetchWithAuth(`${API_URL}/orders/${id}/verify-self-pickup`, {
+            method: 'POST',
+            body: JSON.stringify({ otp, step }),
+        });
+    },
+
+    cancel: (id: string) => {
+        return fetchWithAuth(`${API_URL}/orders/${id}/cancel`, {
+            method: 'PUT',
         });
     },
 };
@@ -143,8 +245,9 @@ export const deliveryDealAPI = {
         });
     },
 
-    getAvailable: () => {
-        return fetchWithAuth(`${API_URL}/delivery-deals/available`);
+    getAvailable: (lat?: number, lng?: number) => {
+        const query = (lat !== undefined && lng !== undefined) ? `?latitude=${lat}&longitude=${lng}` : '';
+        return fetchWithAuth(`${API_URL}/delivery-deals/available${query}`);
     },
 
     accept: (id: string) => {
@@ -156,6 +259,13 @@ export const deliveryDealAPI = {
     decline: (id: string) => {
         return fetchWithAuth(`${API_URL}/delivery-deals/${id}/decline`, {
             method: 'POST',
+        });
+    },
+
+    uploadProofPhoto: (id: string, imageData: string) => {
+        return fetchWithAuth(`${API_URL}/delivery-deals/${id}/proof-photo`, {
+            method: 'POST',
+            body: JSON.stringify({ imageData }),
         });
     },
 
@@ -173,34 +283,211 @@ export const deliveryDealAPI = {
         });
     },
 
+    pay: (id: string) => {
+        return fetchWithAuth(`${API_URL}/delivery-deals/${id}/pay`, {
+            method: 'POST',
+        });
+    },
+
     getTracking: (id: string) => {
         return fetchWithAuth(`${API_URL}/delivery-deals/${id}/tracking`);
     },
+
+    getRoute: (pickup: { lat: number; lng: number }, drop: { lat: number; lng: number }) => {
+        // Use OSRM public API for real route data
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${drop.lng},${drop.lat}?overview=full&geometries=geojson`;
+        return fetch(osrmUrl).then(response => response.json());
+    },
+
+    getDistanceAndETA: (pickup: { lat: number; lng: number }, drop: { lat: number; lng: number }) => {
+        // Use OSRM API to get distance and duration
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${drop.lng},${drop.lat}?overview=false`;
+        return fetch(osrmUrl).then(response => response.json());
+    },
 };
+
+// Negotiation APIs
+export const negotiationAPI = {
+    start: (data: { listingId: string; quantity: number; initialOffer: number }) =>
+        fetchWithAuth(`${API_URL}/negotiations/start`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        }),
+    getMy: () => fetchWithAuth(`${API_URL}/negotiations/my`),
+    getById: (chatId: string) => fetchWithAuth(`${API_URL}/negotiations/${chatId}`),
+    getMessages: (chatId: string) => fetchWithAuth(`${API_URL}/negotiations/${chatId}/messages`),
+    sendMessage: (chatId: string, text: string) => fetchWithAuth(`${API_URL}/negotiations/${chatId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+    }),
+    counter: (chatId: string, amount: number) => fetchWithAuth(`${API_URL}/negotiations/${chatId}/counter`, {
+        method: 'POST',
+        body: JSON.stringify({ amount }),
+    }),
+    accept: (chatId: string) => fetchWithAuth(`${API_URL}/negotiations/${chatId}/accept`, { method: 'POST' }),
+    reject: (chatId: string) => fetchWithAuth(`${API_URL}/negotiations/${chatId}/reject`, { method: 'POST' }),
+};
+
 
 // Auth APIs
 export const authAPI = {
     login: (phone: string, password: string) => {
-        return fetch(`${API_URL}/auth/login`, {
+        return fetchWithAuth(`${API_URL}/auth/login`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ phone, password }),
-        }).then(res => res.json());
+        });
     },
 
     register: (data: any) => {
-        return fetch(`${API_URL}/auth/register`, {
+        return fetchWithAuth(`${API_URL}/auth/register`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
-        }).then(res => res.json());
+        });
+    },
+
+    updateProfile: (profileData: any) => {
+        return fetchWithAuth(`${API_URL}/auth/profile`, {
+            method: 'PUT',
+            body: JSON.stringify(profileData),
+        });
     },
 };
 
+// Earning APIs
+export const earningAPI = {
+    getSummary: () => {
+        return fetchWithAuth(`${API_URL}/earnings/summary`);
+    },
+    getHistory: () => {
+        return fetchWithAuth(`${API_URL}/earnings`);
+    },
+};
+
+// Market Price APIs
+export const marketPriceAPI = {
+    getDailyPrices: (location?: string) => {
+        const query = location ? `?location=${encodeURIComponent(location)}` : '';
+        return fetchWithAuth(`${API_URL}/market-prices/daily${query}`);
+    },
+
+    getCropPrice: (cropId: string, location?: string) => {
+        const query = location ? `?location=${encodeURIComponent(location)}` : '';
+        return fetchWithAuth(`${API_URL}/market-prices/crop/${cropId}${query}`);
+    },
+
+    getHistory: (cropId: string, days: number = 30) => {
+        return fetchWithAuth(`${API_URL}/market-prices/history/${cropId}?days=${days}`);
+    },
+
+    refresh: () => {
+        return fetchWithAuth(`${API_URL}/market-prices/refresh`, {
+            method: 'POST'
+        });
+    },
+
+    getPriceSuggestion: (cropId: string, grade: string, quantity: number) => {
+        const query = new URLSearchParams({
+            cropId,
+            grade,
+            quantity: quantity.toString()
+        }).toString();
+        return fetchWithAuth(`${API_URL}/market-prices/suggestion?${query}`);
+    },
+};
+
+// Weather APIs
+export const weatherAPI = {
+    getForecast: async (lat: number, lng: number) => {
+        try {
+            const response = await fetch(
+                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,uv_index_max,sunrise,sunset&timezone=auto`
+            );
+            return await response.json();
+        } catch (error) {
+            console.error("Weather fetch error:", error);
+            return null;
+        }
+    }
+};
+
+// Location APIs
+export const locationAPI = {
+    calculateDistance: (origin: { lat: number; lng: number }, destination: { lat: number; lng: number }) => {
+        return fetchWithAuth(`${API_URL}/location/calculate-distance`, {
+            method: 'POST',
+            body: JSON.stringify({ origin, destination })
+        });
+    },
+
+    updateProfile: (location: { latitude?: number; longitude?: number; locationSource?: string; address?: string }) => {
+        return fetchWithAuth(`${API_URL}/location/update-profile`, {
+            method: 'PUT',
+            body: JSON.stringify(location)
+        });
+    },
+
+    updateFarmerProfile: (location: { latitude?: number; longitude?: number; locationSource?: string; address?: string }) => {
+        return fetchWithAuth(`${API_URL}/location/update-farmer-profile`, {
+            method: 'PUT',
+            body: JSON.stringify(location)
+        });
+    },
+
+    validateCoordinates: (latitude: number, longitude: number) => {
+        return fetchWithAuth(`${API_URL}/location/validate`, {
+            method: 'POST',
+            body: JSON.stringify({ latitude, longitude })
+        });
+    },
+
+    geocode: (query: string) => {
+        return fetchWithAuth(`${API_URL}/location/geocode?q=${encodeURIComponent(query)}`);
+    },
+
+    reverseGeocode: (lat: number, lon: number) => {
+        return fetchWithAuth(`${API_URL}/location/reverse-geocode?lat=${lat}&lon=${lon}`);
+    }
+};
+
+export const walletAPI = {
+    get: () => fetchWithAuth(`${API_URL}/wallet/my`),
+    addFunds: (amount: number) => fetchWithAuth(`${API_URL}/wallet/add-funds`, {
+        method: 'POST',
+        body: JSON.stringify({ amount })
+    }),
+};
+
+export const notificationAPI = {
+    getUserNotifications: (userId: string) => fetchWithAuth(`${API_URL}/notifications/user/${userId}`),
+    markAsRead: (id: string) => fetchWithAuth(`${API_URL}/notifications/${id}/read`, { method: 'PUT' }),
+};
+
+
 export default {
+
     listing: listingAPI,
     cart: cartAPI,
     order: orderAPI,
     deliveryDeal: deliveryDealAPI,
     auth: authAPI,
+    earning: earningAPI,
+
+    marketPrice: marketPriceAPI,
+    location: locationAPI,
+    wishlist: {
+        getAll: () => fetchWithAuth(`${API_URL}/wishlist`),
+        add: (listingId: string) => fetchWithAuth(`${API_URL}/wishlist/add`, {
+            method: 'POST',
+            body: JSON.stringify({ listingId })
+        }),
+        remove: (listingId: string) => fetchWithAuth(`${API_URL}/wishlist/remove/${listingId}`, {
+            method: 'DELETE'
+        }),
+    },
+    negotiation: negotiationAPI,
+    notification: {
+        getUserNotifications: (userId: string) => fetchWithAuth(`${API_URL}/notifications/user/${userId}`),
+        markAsRead: (id: string) => fetchWithAuth(`${API_URL}/notifications/${id}/read`, { method: 'PUT' }),
+    },
+    wallet: walletAPI,
 };

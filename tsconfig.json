@@ -17,7 +17,8 @@
     "skipLibCheck": true,
     "types": [
       "node",
-      "vite/client"
+      "vite/client",
+      "./vite-env.d.ts"
     ],
     "moduleResolution": "bundler",
     "isolatedModules": true,

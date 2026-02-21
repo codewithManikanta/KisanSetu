@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 
 // Middleware to check if user is a farmer
-exports.requireFarmer = (req, res, next) => {
+const requireFarmer = (req, res, next) => {
     if (req.user && req.user.role === 'FARMER') {
         next();
     } else {
@@ -10,7 +10,7 @@ exports.requireFarmer = (req, res, next) => {
 };
 
 // Middleware to check if user is a buyer
-exports.requireBuyer = (req, res, next) => {
+const requireBuyer = (req, res, next) => {
     if (req.user && req.user.role === 'BUYER') {
         next();
     } else {
@@ -19,7 +19,7 @@ exports.requireBuyer = (req, res, next) => {
 };
 
 // Middleware to check if user is a transporter
-exports.requireTransporter = (req, res, next) => {
+const requireTransporter = (req, res, next) => {
     if (req.user && req.user.role === 'TRANSPORTER') {
         next();
     } else {
@@ -28,7 +28,7 @@ exports.requireTransporter = (req, res, next) => {
 };
 
 // Middleware to check if user is farmer or buyer
-exports.requireFarmerOrBuyer = (req, res, next) => {
+const requireFarmerOrBuyer = (req, res, next) => {
     if (req.user && (req.user.role === 'FARMER' || req.user.role === 'BUYER')) {
         next();
     } else {
@@ -36,8 +36,8 @@ exports.requireFarmerOrBuyer = (req, res, next) => {
     }
 };
 
-// JWT authentication middleware (if not already exists)
-exports.authenticate = (req, res, next) => {
+// JWT authentication middleware
+const authenticate = (req, res, next) => {
     try {
         const token = req.headers.authorization?.split(' ')[1];
 
@@ -53,4 +53,10 @@ exports.authenticate = (req, res, next) => {
     }
 };
 
-module.exports = exports;
+module.exports = {
+    requireFarmer,
+    requireBuyer,
+    requireTransporter,
+    requireFarmerOrBuyer,
+    authenticate
+};

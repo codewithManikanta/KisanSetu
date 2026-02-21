@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Crop, UserRole } from './types';
+import { Crop, UserRole, VehicleType } from './types';
 
 export const SUPPORTED_LANGUAGES = [
   { code: 'en', name: 'English', native: 'English' },
@@ -8,6 +8,65 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'te', name: 'Telugu', native: 'తెలుగు' },
   { code: 'ta', name: 'Tamil', native: 'தமிழ்' },
   { code: 'kn', name: 'Kannada', native: 'ಕನ್ನಡ' },
+];
+
+// Standard vehicles configuration
+export const TRANS_VEHICLES: VehicleType[] = [
+  {
+    id: 'bike_1',
+    name: 'Bike Delivery',
+    icon: 'fas fa-motorcycle',
+    capacity: 15,
+    basePrice: 30,
+    perKmPrice: 6,
+    perKgPrice: 0.5,
+    minPrice: 30,
+    popular: false,
+  },
+  {
+    id: 'auto_1',
+    name: 'Auto Rickshaw',
+    icon: 'fas fa-cube',
+    capacity: 50,
+    basePrice: 50,
+    perKmPrice: 8,
+    perKgPrice: 1,
+    minPrice: 50,
+    popular: true,
+  },
+  {
+    id: 'pickup_1',
+    name: 'Pickup Truck',
+    icon: 'fas fa-truck-pickup',
+    capacity: 500,
+    basePrice: 150,
+    perKmPrice: 15,
+    perKgPrice: 2,
+    minPrice: 150,
+    popular: false,
+  },
+  {
+    id: 'truck_1',
+    name: '4-Wheeler Truck',
+    icon: 'fas fa-truck',
+    capacity: 1000,
+    basePrice: 250,
+    perKmPrice: 20,
+    perKgPrice: 2.5,
+    minPrice: 250,
+    popular: false,
+  },
+  {
+    id: 'tempo_1',
+    name: 'Tempo',
+    icon: 'fas fa-van-shuttle',
+    capacity: 300,
+    basePrice: 120,
+    perKmPrice: 12,
+    perKgPrice: 1.5,
+    minPrice: 120,
+    popular: false,
+  },
 ];
 
 export const CROPS: Crop[] = [
@@ -29,6 +88,14 @@ export const CROPS: Crop[] = [
   { id: '16', name: 'Brinjal', category: 'Vegetable', icon: '🍆' },
   { id: '17', name: 'Peas', category: 'Vegetable', icon: '🫛' },
   { id: '18', name: 'Soybean', category: 'Oilseed', icon: '🫘' },
+];
+
+export const INDIAN_STATES = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat',
+  'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh',
+  'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab',
+  'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh',
+  'Uttarakhand', 'West Bengal', 'Delhi'
 ];
 
 export const TRANSLATIONS: Record<string, any> = {

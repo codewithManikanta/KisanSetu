@@ -1,21 +1,48 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const path = require('path');
 
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 dotenv.config();
 
 const app = express();
+const { initScheduler } = require('./utils/scheduler');
+
+// Start Scheduler
+initScheduler();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '30mb' }));
+app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
 // Global Request Logger
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-    console.log('Headers:', req.headers);
+    const safeHeaders = { ...req.headers };
+    if (safeHeaders.authorization) safeHeaders.authorization = 'Bearer [REDACTED]';
+    if (safeHeaders.cookie) safeHeaders.cookie = '[REDACTED]';
+    console.log('Headers:', safeHeaders);
     if (req.body && Object.keys(req.body).length > 0) {
-        console.log('Body:', JSON.stringify(req.body, null, 2));
+        const body = req.body || {};
+        const safeBody = { ...body };
+        for (const key of Object.keys(safeBody)) {
+            const lowered = key.toLowerCase();
+            if (
+                lowered.includes('password') ||
+                lowered.includes('token') ||
+                lowered.includes('secret') ||
+                lowered.includes('apikey') ||
+                lowered.includes('api_key')
+            ) {
+                safeBody[key] = '[REDACTED]';
+            }
+        }
+        if (Array.isArray(safeBody.images)) {
+            safeBody.images = safeBody.images.map(i => (typeof i === 'string' ? `image(${i.length} chars)` : 'image'));
+        }
+        console.log('Body:', JSON.stringify(safeBody, null, 2));
     }
     next();
 });
@@ -28,6 +55,16 @@ app.get('/', (req, res) => {
 // Auth Routes
 const authRoutes = require('./routes/authRoutes');
 app.use('/api/auth', authRoutes);
+
+// Notification Routes
+const notificationRoutes = require('./routes/notificationRoutes');
+app.use('/api/notifications', notificationRoutes);
+
+// Negotiation Routes
+const negotiationRoutes = require('./routes/negotiationRoutes');
+app.use('/api/negotiations', negotiationRoutes);
+
+
 
 // Listing Routes
 const listingRoutes = require('./routes/listingRoutes');
@@ -45,9 +82,56 @@ app.use('/api/orders', orderRoutes);
 const deliveryDealRoutes = require('./routes/deliveryDealRoutes');
 app.use('/api/delivery-deals', deliveryDealRoutes);
 
+
+
+// Earnings Routes
+const earningRoutes = require('./routes/earningRoutes');
+app.use('/api/earnings', earningRoutes);
+
+// AI Routes
+const aiRoutes = require('./routes/aiRoutes');
+app.use('/api/ai', aiRoutes);
+
+// Admin Routes
+const adminRoutes = require('./routes/adminRoutes');
+app.use('/api/admin', adminRoutes);
+
+// Grading Routes
+const gradingRoute = require('./routes/grading');
+app.use('/api', gradingRoute);
+
+// Market Price Routes
+const marketPriceRoutes = require('./routes/marketPriceRoutes');
+app.use('/api/market-prices', marketPriceRoutes);
+
+// Location Routes
+const locationRoutes = require('./routes/locationRoutes');
+app.use('/api/location', locationRoutes);
+
+// Route Calculation Routes (OSRM)
+const routeRoutes = require('./routes/routeRoutes');
+app.use('/api/route', routeRoutes);
+
+// Health Check Route
+const healthRoutes = require('./routes/healthRoutes');
+app.use('/api/health', healthRoutes);
+
+// Wallet Routes
+const walletRoutes = require('./routes/walletRoutes');
+app.use('/api/wallet', walletRoutes);
+
 // Error Handling Middleware
 app.use((err, req, res, next) => {
-    console.error(err.stack);
+    const status = err?.status || err?.statusCode;
+    if (status === 413 || err?.type === 'entity.too.large' || err?.name === 'PayloadTooLargeError') {
+        return res.status(413).json({
+            error: 'Images are too large. Please upload fewer/smaller photos.'
+        });
+    }
+    if (status === 400 || err?.type === 'entity.parse.failed') {
+        return res.status(400).json({ error: 'Invalid request body.' });
+    }
+    console.error(err.stack || err);
     res.status(500).json({ error: 'Something went wrong!' });
 });
 

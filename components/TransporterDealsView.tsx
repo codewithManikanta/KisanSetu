@@ -1,61 +1,56 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { DeliveryDeal } from '../types';
 import { deliveryDealAPI } from '../services/api';
-import { socketService } from '../services/socketService';
 import OTPModal from './OTPModal';
 import StatusBadge from './StatusBadge';
 import DeliveryTimeline from './DeliveryTimeline';
+import ProofOfDeliveryModal from './ProofOfDeliveryModal';
+import TransporterTrackingMap from './TransporterTrackingMap';
+import { calculateDistance } from '../utils/deliveryUtils';
 
-const TransporterDealsView: React.FC = () => {
-    const [availableDeals, setAvailableDeals] = useState<DeliveryDeal[]>([]);
-    const [myDeals, setMyDeals] = useState<DeliveryDeal[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [view, setView] = useState<'available' | 'active'>('available');
+interface TransporterDealsViewProps {
+    availableDeals: DeliveryDeal[];
+    myDeals: DeliveryDeal[];
+    loading?: boolean;
+    onRefresh: () => void;
+    mode: 'available' | 'active' | 'history';
+    onViewEarningDetails?: (deal: DeliveryDeal) => void;
+}
+
+const TransporterDealsView: React.FC<TransporterDealsViewProps> = ({
+    availableDeals,
+    myDeals,
+    loading = false,
+    onRefresh,
+    mode,
+    onViewEarningDetails
+}) => {
     const [showOtpModal, setShowOtpModal] = useState(false);
+    const [showPoDModal, setShowPoDModal] = useState(false);
     const [selectedDeal, setSelectedDeal] = useState<DeliveryDeal | null>(null);
 
-    useEffect(() => {
-        loadDeals();
+    // Internal socket logic removed - handled by parent Dashboard now
 
-        socketService.connect();
-        socketService.onDeliveryCreated(() => loadDeals());
-        socketService.onDeliveryAccepted(() => loadDeals());
-        socketService.onDeliveryOtpVerified(() => loadDeals());
-        socketService.onDeliveryStatusUpdate(() => loadDeals());
+    // Helper to get current location
+    const [currentLocation, setCurrentLocation] = useState<{ lat: number; lng: number } | null>(null);
 
-        return () => {
-            socketService.removeAllListeners();
-        };
+    React.useEffect(() => {
+        if (navigator.geolocation) {
+            const watchId = navigator.geolocation.watchPosition(
+                (pos) => setCurrentLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+                (err) => console.error(err),
+                { enableHighAccuracy: true }
+            );
+            return () => navigator.geolocation.clearWatch(watchId);
+        }
     }, []);
 
-    const loadDeals = async () => {
-        try {
-            setLoading(true);
-            const response = await deliveryDealAPI.getAvailable();
-
-            // Filter deals by transporter assignment
-            const available = response.deals?.filter((d: DeliveryDeal) =>
-                d.status === 'WAITING_FOR_TRANSPORTER'
-            ) || [];
-
-            const assigned = response.deals?.filter((d: DeliveryDeal) =>
-                d.transporter && d.status !== 'COMPLETED'
-            ) || [];
-
-            setAvailableDeals(available);
-            setMyDeals(assigned);
-        } catch (error) {
-            console.error('Failed to load deals:', error);
-        } finally {
-            setLoading(false);
-        }
-    };
 
     const handleAcceptDeal = async (dealId: string) => {
         try {
             await deliveryDealAPI.accept(dealId);
-            await loadDeals();
-            setView('active');
+            onRefresh();
+            // setView('active'); // Removed as view is now controlled by parent
         } catch (error: any) {
             alert(error.message || 'Failed to accept deal');
         }
@@ -64,7 +59,7 @@ const TransporterDealsView: React.FC = () => {
     const handleDeclineDeal = async (dealId: string) => {
         try {
             await deliveryDealAPI.decline(dealId);
-            setAvailableDeals(prev => prev.filter(d => d.id !== dealId));
+            onRefresh(); // Refresh to update list from server (or optimistic update if desired, but refresh is safer for sync)
         } catch (error: any) {
             alert(error.message || 'Failed to decline deal');
         }
@@ -75,15 +70,29 @@ const TransporterDealsView: React.FC = () => {
         await deliveryDealAPI.verifyOtp(selectedDeal.id, otp);
         setShowOtpModal(false);
         setSelectedDeal(null);
-        await loadDeals();
+        onRefresh();
     };
 
     const handleUpdateStatus = async (dealId: string, newStatus: string) => {
         try {
             await deliveryDealAPI.updateStatus(dealId, newStatus);
-            await loadDeals();
+            onRefresh();
         } catch (error: any) {
             alert(error.message || 'Failed to update status');
+        }
+    };
+
+    const handlePoDSubmit = async (data: { imageData: string; otp: string }) => {
+        if (!selectedDeal) return;
+
+        try {
+            await deliveryDealAPI.uploadProofPhoto(selectedDeal.id, data.imageData);
+            await deliveryDealAPI.verifyOtp(selectedDeal.id, data.otp);
+            setShowPoDModal(false);
+            setSelectedDeal(null);
+            onRefresh();
+        } catch (error: any) {
+            alert(error.message || 'Failed to complete delivery');
         }
     };
 
@@ -94,7 +103,9 @@ const TransporterDealsView: React.FC = () => {
             case 'PICKED_UP':
                 return { label: 'Start Transit', next: 'IN_TRANSIT', icon: 'fa-truck-fast', action: 'status' };
             case 'IN_TRANSIT':
-                return { label: 'Mark Delivered', next: 'DELIVERED', icon: 'fa-check-circle', action: 'otp' };
+                return { label: 'Out for Delivery', next: 'OUT_FOR_DELIVERY', icon: 'fa-map-location-dot', action: 'status' };
+            case 'OUT_FOR_DELIVERY':
+                return { label: 'Complete Delivery', next: 'COMPLETED', icon: 'fa-camera', action: 'pod' };
             case 'DELIVERED':
                 return { label: 'Complete', next: 'COMPLETED', icon: 'fa-flag-checkered', action: 'status' };
             default:
@@ -112,40 +123,8 @@ const TransporterDealsView: React.FC = () => {
 
     return (
         <div className="space-y-6 pb-24">
-            {/* View Toggle */}
-            <div className="bg-gray-100 p-1.5 rounded-2xl flex">
-                <button
-                    onClick={() => setView('available')}
-                    className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all ${view === 'available'
-                            ? 'bg-white text-gray-900 shadow-sm'
-                            : 'text-gray-500'
-                        }`}
-                >
-                    Available Deals
-                    {availableDeals.length > 0 && (
-                        <span className="ml-2 px-2 py-0.5 bg-green-100 text-green-600 rounded-full text-xs">
-                            {availableDeals.length}
-                        </span>
-                    )}
-                </button>
-                <button
-                    onClick={() => setView('active')}
-                    className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all ${view === 'active'
-                            ? 'bg-white text-gray-900 shadow-sm'
-                            : 'text-gray-500'
-                        }`}
-                >
-                    My Deliveries
-                    {myDeals.length > 0 && (
-                        <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-600 rounded-full text-xs">
-                            {myDeals.length}
-                        </span>
-                    )}
-                </button>
-            </div>
-
             {/* Available Deals */}
-            {view === 'available' && (
+            {mode === 'available' && (
                 <div className="space-y-4">
                     <h2 className="text-xl font-black text-gray-900">Available Deals</h2>
 
@@ -176,6 +155,11 @@ const TransporterDealsView: React.FC = () => {
                                         <StatusBadge status={deal.status} type="delivery" />
                                     </div>
 
+                                    {/* Map Preview */}
+                                    <div className="mb-4">
+                                        <TransporterTrackingMap deal={deal} driverLocation={currentLocation} isPreview={true} />
+                                    </div>
+
                                     {/* Route Info */}
                                     <div className="bg-gray-50 rounded-2xl p-4 mb-4 space-y-3">
                                         <div className="flex items-start gap-3">
@@ -202,14 +186,27 @@ const TransporterDealsView: React.FC = () => {
                                     </div>
 
                                     {/* Deal Details */}
-                                    <div className="grid grid-cols-2 gap-4 mb-4">
+                                    <div className="grid grid-cols-3 gap-2 mb-4">
                                         <div>
-                                            <p className="text-xs text-gray-500 mb-1">Distance</p>
-                                            <p className="text-lg font-black text-gray-900">{deal.distance} km</p>
+                                            <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1 font-bold">Trip Distance</p>
+                                            <p className="text-base font-black text-gray-900">{deal.distance} km</p>
+                                        </div>
+                                        <div className="text-center">
+                                            <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1 font-bold">To Pickup</p>
+                                            <p className="text-base font-black text-blue-600">
+                                                {currentLocation && deal.pickupLocation.lat && deal.pickupLocation.lng
+                                                    ? `${calculateDistance(
+                                                        currentLocation.lat,
+                                                        currentLocation.lng,
+                                                        deal.pickupLocation.lat,
+                                                        deal.pickupLocation.lng
+                                                    ).toFixed(1)} km`
+                                                    : '--'}
+                                            </p>
                                         </div>
                                         <div className="text-right">
-                                            <p className="text-xs text-gray-500 mb-1">Earning</p>
-                                            <p className="text-lg font-black text-green-600">₹{deal.totalCost}</p>
+                                            <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1 font-bold">Earning</p>
+                                            <p className="text-base font-black text-green-600">₹{deal.totalCost}</p>
                                         </div>
                                     </div>
 
@@ -249,7 +246,7 @@ const TransporterDealsView: React.FC = () => {
             )}
 
             {/* My Active Deliveries */}
-            {view === 'active' && (
+            {mode === 'active' && (
                 <div className="space-y-4">
                     <h2 className="text-xl font-black text-gray-900">My Deliveries</h2>
 
@@ -260,12 +257,6 @@ const TransporterDealsView: React.FC = () => {
                             </div>
                             <h3 className="text-lg font-bold text-gray-900 mb-2">No active deliveries</h3>
                             <p className="text-sm text-gray-500">Accept deals to start earning</p>
-                            <button
-                                onClick={() => setView('available')}
-                                className="mt-4 px-6 py-3 bg-green-600 text-white rounded-2xl font-bold hover:bg-green-700"
-                            >
-                                Find Deals
-                            </button>
                         </div>
                     ) : (
                         <div className="space-y-4">
@@ -290,25 +281,28 @@ const TransporterDealsView: React.FC = () => {
                                         {/* Timeline */}
                                         <div className="mb-4">
                                             <DeliveryTimeline
-                                                status={deal.status}
-                                                pickupTimestamp={deal.pickupTimestamp}
-                                                deliveryTimestamp={deal.deliveryTimestamp}
-                                                createdAt={deal.createdAt}
+                                                currentStatus={deal.status}
+                                                role="TRANSPORTER"
                                             />
+                                        </div>
+
+                                        {/* Map Integration */}
+                                        <div className="mb-6">
+                                            <TransporterTrackingMap deal={deal} driverLocation={currentLocation} />
                                         </div>
 
                                         {/* Route Info */}
                                         <div className="grid grid-cols-2 gap-4 mb-4">
                                             <div className="bg-gray-50 rounded-2xl p-3">
                                                 <p className="text-xs text-gray-500 mb-1">From</p>
-                                                <p className="text-sm font-bold text-gray-900">
-                                                    {deal.pickupLocation.address.split(',')[0]}
+                                                <p className="text-sm font-bold text-gray-900 break-words">
+                                                    {deal.pickupLocation.address}
                                                 </p>
                                             </div>
                                             <div className="bg-gray-50 rounded-2xl p-3">
                                                 <p className="text-xs text-gray-500 mb-1">To</p>
-                                                <p className="text-sm font-bold text-gray-900">
-                                                    {deal.dropLocation.address.split(',')[0]}
+                                                <p className="text-sm font-bold text-gray-900 break-words">
+                                                    {deal.dropLocation.address}
                                                 </p>
                                             </div>
                                         </div>
@@ -320,6 +314,9 @@ const TransporterDealsView: React.FC = () => {
                                                     if (nextAction.action === 'otp') {
                                                         setSelectedDeal(deal);
                                                         setShowOtpModal(true);
+                                                    } else if (nextAction.action === 'pod') {
+                                                        setSelectedDeal(deal);
+                                                        setShowPoDModal(true);
                                                     } else {
                                                         handleUpdateStatus(deal.id, nextAction.next);
                                                     }
@@ -345,6 +342,68 @@ const TransporterDealsView: React.FC = () => {
                 </div>
             )}
 
+            {/* History / Completed Deliveries */}
+            {mode === 'history' && (
+                <div className="space-y-4">
+                    <h2 className="text-xl font-black text-gray-900">Delivery History</h2>
+
+                    {myDeals.length === 0 ? (
+                        <div className="bg-white rounded-3xl p-16 text-center border-2 border-dashed border-gray-200">
+                            <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <i className="fas fa-clock-rotate-left text-3xl text-gray-300"></i>
+                            </div>
+                            <h3 className="text-lg font-bold text-gray-900 mb-2">No delivery history</h3>
+                            <p className="text-sm text-gray-500">Completed deliveries will appear here</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {myDeals.map((deal) => (
+                                <div key={deal.id} className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 opacity-90 grayscale-[0.3] hover:grayscale-0 transition-all">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div>
+                                            <h3 className="text-lg font-black text-gray-900">
+                                                {deal.order?.listing?.crop?.name || 'Delivery'}
+                                            </h3>
+                                            <p className="text-xs text-gray-400 mt-1">Deal ID: #{deal.id.slice(0, 8)}</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <StatusBadge status={deal.status} type="delivery" />
+                                            <p className="text-lg font-black text-emerald-600 mt-2">₹{deal.totalCost}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4 mb-4">
+                                        <div className="bg-gray-50 rounded-2xl p-3">
+                                            <p className="text-xs text-gray-500 mb-1">From</p>
+                                            <p className="text-sm font-bold text-gray-900 truncate">
+                                                {deal.pickupLocation.address}
+                                            </p>
+                                        </div>
+                                        <div className="bg-gray-50 rounded-2xl p-3">
+                                            <p className="text-xs text-gray-500 mb-1">To</p>
+                                            <p className="text-sm font-bold text-gray-900 truncate">
+                                                {deal.dropLocation.address}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex justify-between items-center text-[10px] uppercase font-black tracking-widest text-gray-400 px-1 mt-2">
+                                        <span>Distance: {deal.distance} km</span>
+                                        <button
+                                            onClick={() => onViewEarningDetails?.(deal)}
+                                            className="text-blue-600 hover:text-blue-700 underline"
+                                        >
+                                            View Earning Details
+                                        </button>
+                                        <span>Completed on: {deal.updatedAt ? new Date(deal.updatedAt).toLocaleDateString() : 'Recently'}</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* OTP Entry Modal */}
             <OTPModal
                 isOpen={showOtpModal}
@@ -356,6 +415,13 @@ const TransporterDealsView: React.FC = () => {
                 onVerify={handleVerifyOtp}
                 title={selectedDeal?.status === 'IN_TRANSIT' ? "Enter Delivery OTP" : "Enter Pickup OTP"}
             />
+            {showPoDModal && (
+                <ProofOfDeliveryModal
+                    isOpen={showPoDModal}
+                    onClose={() => setShowPoDModal(false)}
+                    onSubmit={handlePoDSubmit}
+                />
+            )}
         </div>
     );
 };

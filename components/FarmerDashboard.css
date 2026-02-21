@@ -1,0 +1,7 @@
+.cropper-rect {
+  left: calc(var(--cropper-x, 0) * 100%);
+  top: calc(var(--cropper-y, 0) * 100%);
+  width: calc(var(--cropper-size, 1) * 100%);
+  height: calc(var(--cropper-size, 1) * 100%);
+  position: absolute;
+}

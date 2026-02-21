@@ -9,6 +9,7 @@ export interface User {
     role: Role;
     status: 'ACTIVE' | 'PENDING_APPROVAL' | 'SUSPENDED';
     name?: string;
+    profilePhoto?: string;
     phone?: string;
     language?: string;
     location?: {

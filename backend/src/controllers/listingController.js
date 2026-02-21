@@ -1,7 +1,16 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const { resolveFarmerListingLocation } = require('../services/locationDefaultsService');
 
-const formatFarmerUser = (farmer) => {
+const getFarmerDefaultLocation = async (farmerId) => {
+    const user = await prisma.user.findUnique({
+        where: { id: farmerId },
+        include: { farmerProfile: true }
+    });
+    return resolveFarmerListingLocation(user?.farmerProfile);
+};
+
+const formatFarmerOwner = (farmer) => {
     const profile = farmer?.farmerProfile;
     return {
         id: farmer?.id,
@@ -11,6 +20,15 @@ const formatFarmerUser = (farmer) => {
         district: profile?.district || undefined,
         state: profile?.state || undefined,
         location: profile ? `${profile.village}, ${profile.district}` : undefined
+    };
+};
+
+const formatFarmerPublic = (farmer) => {
+    const profile = farmer?.farmerProfile;
+    return {
+        id: farmer?.id,
+        name: profile?.fullName || undefined,
+        location: profile ? `${profile.district}, ${profile.state}` : undefined
     };
 };
 
@@ -38,8 +56,10 @@ exports.createListing = async (req, res) => {
             msp,
             grade,
             harvestDate,
+            harvestType,
             images,
-            location
+            qualitySummary,
+            saleDate
         } = req.body;
 
         const farmerId = req.user.id;
@@ -61,6 +81,14 @@ exports.createListing = async (req, res) => {
             return res.status(404).json({ error: 'Crop not found' });
         }
 
+        const allowedHarvestTypes = new Set(['STANDING_CROP', 'HARVESTED_CROP', 'PROCESSED_CLEANED_CROP', 'SEED_NURSERY']);
+        const resolvedHarvestType = allowedHarvestTypes.has(String(harvestType || '')) ? String(harvestType) : 'HARVESTED_CROP';
+
+        const resolvedLocation = await getFarmerDefaultLocation(farmerId);
+        if (!resolvedLocation) {
+            return res.status(400).json({ error: 'Please set your farm location in profile before creating listings' });
+        }
+
         // Create listing with AVAILABLE status
         const listing = await prisma.listing.create({
             data: {
@@ -73,8 +101,11 @@ exports.createListing = async (req, res) => {
                 msp,
                 grade,
                 harvestDate: new Date(harvestDate),
+                harvestType: resolvedHarvestType,
                 images: images || [],
-                location,
+                location: resolvedLocation,
+                qualitySummary: qualitySummary || null,
+                saleDate: saleDate ? new Date(saleDate) : null,
                 status: 'AVAILABLE' // Immediately available to all buyers
             },
             include: {
@@ -85,12 +116,20 @@ exports.createListing = async (req, res) => {
             }
         });
 
-        listing.farmer = formatFarmerUser(listing.farmer);
+        listing.farmer = formatFarmerOwner(listing.farmer);
 
         // Emit WebSocket event to notify all buyers of new listing
         if (req.app.get('io')) {
-            req.app.get('io').emit('listing:created', {
-                listing
+            req.app.get('io').emit('notification', {
+                type: 'new_listing',
+                userId: 'all_buyers', // Special identifier for all buyers
+                title: 'New Listing Available!',
+                message: `New ${listing.crop.name} listing added by ${listing.farmer.name || 'Farmer'}. ${listing.quantity}kg available at ${listing.expectedPrice}/kg.`,
+                listingId: listing.id,
+                data: {
+                    listing: listing,
+                    crop: listing.crop
+                }
             });
         }
 
@@ -105,6 +144,7 @@ exports.createListing = async (req, res) => {
 };
 
 // Get all available listings (for buyers - search and cart system)
+// Get all available listings (for buyers - search and cart system)
 exports.getAllListings = async (req, res) => {
     try {
         const {
@@ -114,7 +154,11 @@ exports.getAllListings = async (req, res) => {
             maxPrice,
             grade,
             status,
-            search
+            search,
+            state,       // New param
+            radius,      // New param
+            latitude,    // New param (user's lat)
+            longitude    // New param (user's lng)
         } = req.query;
 
         // Build filter
@@ -127,52 +171,103 @@ exports.getAllListings = async (req, res) => {
             where.status = 'AVAILABLE';
         }
 
-        if (cropId) {
+        if (cropId && cropId !== 'undefined') {
             where.cropId = cropId;
         }
 
-        if (location) {
+        if (location && location !== 'undefined') {
             where.location = {
                 contains: location,
                 mode: 'insensitive'
             };
         }
 
-        if (grade) {
+        if (grade && grade !== 'undefined') {
             where.grade = grade;
         }
 
         if (minPrice || maxPrice) {
             where.expectedPrice = {};
-            if (minPrice) where.expectedPrice.gte = parseFloat(minPrice);
-            if (maxPrice) where.expectedPrice.lte = parseFloat(maxPrice);
+            if (minPrice && minPrice !== 'undefined') where.expectedPrice.gte = parseFloat(minPrice);
+            if (maxPrice && maxPrice !== 'undefined') where.expectedPrice.lte = parseFloat(maxPrice);
         }
+
+        // State Filtering
+        if (state && state !== 'undefined' && state !== 'null') {
+            where.farmer = {
+                farmerProfile: {
+                    state: {
+                        contains: String(state),
+                        mode: 'insensitive'
+                    }
+                }
+            };
+        }
+
 
         const listings = await prisma.listing.findMany({
             where,
+            orderBy: {
+                createdAt: 'desc'
+            },
             include: {
                 crop: true,
                 farmer: {
                     include: { farmerProfile: true }
                 }
-            },
-            orderBy: {
-                createdAt: 'desc'
             }
         });
 
-        const formatted = listings.map(l => {
-            l.farmer = formatFarmerUser(l.farmer);
-            return l;
-        });
+        // Helper for distance
+        const getDistance = (lat1, lon1, lat2, lon2) => {
+            const R = 6371; // km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        };
+
+        let validListings = listings;
+
+        // Radius Filtering (In-memory)
+        if (radius && latitude && longitude) {
+            const userLat = parseFloat(latitude);
+            const userLng = parseFloat(longitude);
+            const radiusKm = parseFloat(radius);
+
+            if (!isNaN(userLat) && !isNaN(userLng) && !isNaN(radiusKm)) {
+                validListings = validListings.filter(l => {
+                    const farmerLat = l.farmer?.farmerProfile?.latitude;
+                    const farmerLng = l.farmer?.farmerProfile?.longitude;
+
+                    if (farmerLat && farmerLng) {
+                        const dist = getDistance(userLat, userLng, farmerLat, farmerLng);
+                        return dist <= radiusKm;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        // Format for response
+        const formattedListings = validListings.map(l => {
+            if (!l.crop || !l.farmer) return null;
+            return {
+                ...l,
+                farmer: formatFarmerPublic(l.farmer)
+            };
+        }).filter(l => l !== null);
 
         res.json({
-            listings: formatted,
-            count: formatted.length
+            listings: formattedListings,
+            count: formattedListings.length
         });
     } catch (error) {
         console.error('Get listings error:', error);
-        res.status(500).json({ error: 'Failed to fetch listings' });
+        res.status(500).json({ error: 'Failed to fetch listings', details: error.message });
     }
 };
 
@@ -195,7 +290,7 @@ exports.getListingById = async (req, res) => {
             return res.status(404).json({ error: 'Listing not found' });
         }
 
-        listing.farmer = formatFarmerUser(listing.farmer);
+        listing.farmer = formatFarmerPublic(listing.farmer);
         res.json({ listing });
     } catch (error) {
         console.error('Get listing error:', error);
@@ -295,6 +390,20 @@ exports.updateListing = async (req, res) => {
             updateData.harvestDate = new Date(updateData.harvestDate);
         }
 
+        if (updateData.harvestType) {
+            const allowedHarvestTypes = new Set(['STANDING_CROP', 'HARVESTED_CROP', 'PROCESSED_CLEANED_CROP', 'SEED_NURSERY']);
+            if (!allowedHarvestTypes.has(String(updateData.harvestType))) {
+                delete updateData.harvestType;
+            }
+        }
+
+        const resolvedLocation = await getFarmerDefaultLocation(farmerId);
+        if (resolvedLocation) {
+            updateData.location = resolvedLocation;
+        } else {
+            delete updateData.location;
+        }
+
         const updatedListing = await prisma.listing.update({
             where: { id },
             data: updateData,
@@ -306,7 +415,7 @@ exports.updateListing = async (req, res) => {
             }
         });
 
-        updatedListing.farmer = formatFarmerUser(updatedListing.farmer);
+        updatedListing.farmer = formatFarmerOwner(updatedListing.farmer);
 
         // Emit WebSocket event
         if (req.app.get('io')) {
@@ -463,7 +572,7 @@ exports.searchListings = async (req, res) => {
         });
 
         const formatted = listings.map(l => {
-            l.farmer = formatFarmerUser(l.farmer);
+            l.farmer = formatFarmerPublic(l.farmer);
             return l;
         });
 

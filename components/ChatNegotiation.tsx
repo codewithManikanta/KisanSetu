@@ -1,457 +1,624 @@
-
-import React, { useState, useEffect, useRef } from 'react';
-import { UserRole } from '../types';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { negotiationAPI } from '../services/api';
+import { socketService } from '../services/socketService';
+import { useToast } from '../context/ToastContext';
 import { geminiService } from '../services/geminiService';
 
-interface ChatNegotiationProps {
-  listing: any;
-  marketPrice: number;
-  initialOffer: number;
-  userRole: UserRole;
-  onClose: () => void;
-  onAcceptDeal?: (deal: any) => void;
-}
-
-interface Message {
+// ─── Types ───────────────────────────────────────────────────────────────────
+interface NegotiationMessage {
   id: string;
-  sender: 'farmer' | 'buyer' | 'system';
+  chatId: string;
+  senderId: string;
   text: string;
-  timestamp: string;
-  isOffer?: boolean;
+  type: 'TEXT' | 'OFFER';
   offerValue?: number;
-  image?: string;
+  offerStatus?: string; // 'pending' | 'accepted' | 'rejected' | 'superseded'
+  createdAt: string;
+  sender?: {
+    id: string;
+    role: string;
+    farmerProfile?: { fullName: string };
+    buyerProfile?: { fullName: string };
+  };
 }
 
-const ChatNegotiation: React.FC<ChatNegotiationProps> = ({ 
-  listing, 
-  marketPrice, 
-  initialOffer, 
-  userRole, 
-  onClose, 
-  onAcceptDeal 
+interface NegotiationChat {
+  id: string;
+  listingId: string;
+  buyerId: string;
+  farmerId: string;
+  requestedQuantity: number;
+  currentOffer: number;
+  status: string;
+  lastMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  listing?: {
+    id: string;
+    quantity: number;
+    expectedPrice: number;
+    grade: string;
+    crop?: { name: string; icon: string };
+    farmer?: { farmerProfile?: { fullName: string } };
+  };
+  buyer?: { buyerProfile?: { fullName: string } };
+  farmer?: { farmerProfile?: { fullName: string; phone?: string } };
+  messages?: NegotiationMessage[];
+}
+
+interface ChatNegotiationProps {
+  chatId: string;
+  userId: string;
+  userRole: 'FARMER' | 'BUYER';
+  onClose: () => void;
+  onStatusChange?: (chatId: string, status: string) => void;
+  onProceedToCheckout?: (data: { listingId: string, quantity: number, price: number, negotiationId: string }) => void;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const formatTime = (dateStr: string) => {
+  const d = new Date(dateStr);
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
+const formatDate = (dateStr: string) => {
+  const d = new Date(dateStr);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+const shouldShowDateSeparator = (curr: string, prev?: string) => {
+  if (!prev) return true;
+  return new Date(curr).toDateString() !== new Date(prev).toDateString();
+};
+
+// ─── Component ───────────────────────────────────────────────────────────────
+const ChatNegotiation: React.FC<ChatNegotiationProps> = ({
+  chatId,
+  userId,
+  userRole,
+  onClose,
+  onStatusChange,
+  onProceedToCheckout
 }) => {
-  const isFarmer = userRole === UserRole.FARMER;
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  const [messages, setMessages] = useState<Message[]>([
-    { 
-      id: '1', 
-      sender: 'system', 
-      text: `Negotiation secure for ${listing.cropName}.`, 
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
-    },
-    { 
-      id: '2', 
-      sender: isFarmer ? 'buyer' : 'farmer', 
-      text: isFarmer 
-        ? `I am ready to buy your ${listing.cropName} immediately.`
-        : `My ${listing.cropName} is of premium quality. I'm looking for a fair price.`, 
-      isOffer: true,
-      offerValue: initialOffer,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
-    }
-  ]);
-  
-  const [currentOffer, setCurrentOffer] = useState(initialOffer);
-  const [inputValue, setInputValue] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const [attachedImage, setAttachedImage] = useState<string | null>(null);
-  
-  // Delivery Responsibility State
-  const [showDeliveryModal, setShowDeliveryModal] = useState(false);
-  const [deliveryResponsibility, setDeliveryResponsibility] = useState<'FARMER' | 'BUYER'>('FARMER');
+  const { success, error, info } = useToast();
+  const [chat, setChat] = useState<NegotiationChat | null>(null);
+  const [messages, setMessages] = useState<NegotiationMessage[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [offerAmount, setOfferAmount] = useState('');
+  const [showOfferInput, setShowOfferInput] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [timeLeft, setTimeLeft] = useState<string | null>(null);
+  const [isExpired, setIsExpired] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
+  const isFarmer = userRole === 'FARMER';
+  const accentColor = isFarmer ? 'emerald' : 'blue';
+
+  // ─── Scroll to bottom ───────────────────────────────────────────────
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  // ─── Load chat data ─────────────────────────────────────────────────
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, isTyping]);
-
-  const handleImagePick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setAttachedImage(reader.result as string);
-        geminiService.speak("Photo attached.");
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleAcceptClick = () => {
-    setShowDeliveryModal(true);
-  };
-
-  const confirmAccept = () => {
-    setShowDeliveryModal(false);
-    handleAction('ACCEPT');
-  };
-
-  const handleAction = async (type: 'COUNTER' | 'ACCEPT' | 'REJECT' | 'SEND_TEXT', value?: number) => {
-    const myLabel = isFarmer ? 'farmer' : 'buyer';
-    const counterpartyLabel = isFarmer ? 'buyer' : 'farmer';
-    let text = inputValue.trim();
-    const val = value || Number(inputValue);
-
-    if (type === 'COUNTER') {
-      if (!val) return;
-      text = text || `I'm proposing a counter-offer of ₹${val}/kg.`;
-      setCurrentOffer(val);
-      setInputValue('');
-    } else if (type === 'ACCEPT') {
-      text = `Deal confirmed at ₹${currentOffer}/kg. Proceeding with details.`;
-      geminiService.speak("Negotiation finalized.");
-    } else if (type === 'REJECT') {
-      text = `I'm sorry, I cannot proceed with this price.`;
-    } else if (type === 'SEND_TEXT') {
-      if (!text && !attachedImage) return;
-      setInputValue('');
-    }
-
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      sender: myLabel,
-      text: text || (attachedImage ? (isFarmer ? "Sharing crop quality photo." : "Sharing delivery requirement photo.") : ""),
-      isOffer: type === 'COUNTER',
-      offerValue: type === 'COUNTER' ? val : undefined,
-      image: attachedImage || undefined,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const loadChat = async () => {
+      try {
+        setLoading(true);
+        const chatData = await negotiationAPI.getById(chatId);
+        setChat(chatData);
+        const msgs = await negotiationAPI.getMessages(chatId);
+        setMessages(Array.isArray(msgs) ? msgs : []);
+      } catch (err) {
+        console.error('Failed to load negotiation:', err);
+      } finally {
+        setLoading(false);
+      }
     };
+    loadChat();
+  }, [chatId]);
 
-    setMessages(prev => [...prev, newMessage]);
-    setAttachedImage(null);
-
-    if (type === 'ACCEPT') {
-      setTimeout(() => {
-        if (onAcceptDeal) {
-          onAcceptDeal({
-            id: `deal-${Date.now()}`,
-            buyer: isFarmer ? 'VegMart Wholesalers' : 'You',
-            farmer: isFarmer ? 'You' : 'Ram Prasad',
-            crop: listing.cropName,
-            price: currentOffer,
-            qty: listing.quantity,
-            listingId: listing.id,
-            deliveryResponsibility: deliveryResponsibility === 'FARMER' ? 'FARMER_ARRANGED' : 'BUYER_ARRANGED',
-            date: 'Just now'
-          });
-        }
-      }, 1200);
+  // ─── Countdown Timer ──────────────────────────────────────────────
+  useEffect(() => {
+    if (chat?.status !== 'ACCEPTED') {
+      setTimeLeft(null);
+      setIsExpired(false);
       return;
     }
 
-    if (type === 'COUNTER') {
-      setIsTyping(true);
-      setTimeout(() => {
-        setIsTyping(false);
-        const isClose = Math.abs(val - marketPrice) / marketPrice < 0.1;
-        const reply: Message = {
-          id: (Date.now() + 1).toString(),
-          sender: counterpartyLabel,
-          text: isClose 
-            ? `Price looks fair. I accept ₹${val}.` 
-            : `That's a bit high. Can we meet at ₹${Math.round(val * 0.95)}?`,
-          isOffer: !isClose,
-          offerValue: !isClose ? Math.round(val * 0.95) : undefined,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        };
-        if (isClose) setCurrentOffer(val);
-        else if (reply.offerValue) setCurrentOffer(reply.offerValue);
-        
-        setMessages(prev => [...prev, reply]);
-        if (isClose) geminiService.speak("Counter-offer accepted.");
-      }, 2500);
+    const updateTimer = () => {
+      const acceptedAt = new Date(chat.updatedAt).getTime();
+      const expiryTime = acceptedAt + (2 * 60 * 60 * 1000); // 2 hours
+      const now = new Date().getTime();
+      const diff = expiryTime - now;
+
+      if (diff <= 0) {
+        setTimeLeft('EXPIRED');
+        setIsExpired(true);
+        return;
+      }
+
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+      setTimeLeft(`${hours}h ${minutes}m ${seconds}s`);
+      setIsExpired(false);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [chat?.status, chat?.updatedAt]);
+
+  // ─── Socket listeners ──────────────────────────────────────────────
+  useEffect(() => {
+    socketService.joinNegotiationRoom(chatId);
+
+    const handleMessage = (msg: NegotiationMessage) => {
+      if (msg.chatId === chatId) {
+        setMessages(prev => {
+          if (prev.some(m => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+      }
+    };
+
+    const handleStatus = (data: { chatId: string; status: string; offer?: number }) => {
+      if (data.chatId === chatId) {
+        setChat(prev => {
+          if (!prev) return prev;
+          // Notify buyer if accepted
+          if (data.status === 'ACCEPTED' && prev.status !== 'ACCEPTED' && userRole === 'BUYER') {
+            success('Offer Accepted! 2-hour checkout window started.');
+            geminiService.speak('The farmer has accepted your offer. You have 2 hours to complete the purchase at the negotiated price.');
+          }
+          return { ...prev, status: data.status, currentOffer: data.offer ?? prev.currentOffer, updatedAt: new Date().toISOString() };
+        });
+        onStatusChange?.(chatId, data.status);
+      }
+    };
+
+    socketService.onNegotiationMessage(handleMessage);
+    socketService.onNegotiationStatus(handleStatus);
+
+    return () => {
+      socketService.offNegotiationMessage(handleMessage);
+      socketService.offNegotiationStatus(handleStatus);
+      socketService.leaveNegotiationRoom(chatId);
+    };
+  }, [chatId, onStatusChange]);
+
+  // ─── Auto-scroll on new messages ───────────────────────────────────
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
+
+  // ─── Send text message ─────────────────────────────────────────────
+  const handleSendMessage = async () => {
+    if (!inputText.trim() || sending) return;
+    const text = inputText.trim();
+    setInputText('');
+    setSending(true);
+
+    try {
+      const newMsg = await negotiationAPI.sendMessage(chatId, text);
+      setMessages(prev => {
+        if (prev.some(m => m.id === newMsg.id)) return prev;
+        return [...prev, newMsg];
+      });
+      scrollToBottom();
+    } catch (err) {
+      console.error('Failed to send message:', err);
+      setInputText(text);
+    } finally {
+      setSending(false);
     }
   };
 
-  const calculateDiff = () => {
-    const diff = ((currentOffer - marketPrice) / marketPrice) * 100;
-    return diff.toFixed(1);
+  // ─── Send offer ────────────────────────────────────────────────────
+  const handleSendOffer = async () => {
+    const amount = parseFloat(offerAmount);
+    if (isNaN(amount) || amount <= 0 || sending) return;
+    setOfferAmount('');
+    setShowOfferInput(false);
+    setSending(true);
+
+    try {
+      const newMsg = await negotiationAPI.counter(chatId, amount);
+      setMessages(prev => {
+        if (prev.some(m => m.id === newMsg.id)) return prev;
+        return [...prev, newMsg];
+      });
+      scrollToBottom();
+    } catch (err) {
+      console.error('Failed to send offer:', err);
+    } finally {
+      setSending(false);
+    }
   };
 
-  const getPriceSentiment = () => {
-    const diff = Number(calculateDiff());
-    if (diff > 15) return { label: 'Premium', color: 'text-red-400', bg: 'bg-red-500' };
-    if (diff > 5) return { label: 'High', color: 'text-amber-400', bg: 'bg-amber-500' };
-    if (diff < -5) return { label: 'Bargain', color: 'text-blue-400', bg: 'bg-blue-500' };
-    return { label: 'Fair', color: 'text-emerald-400', bg: 'bg-emerald-500' };
+  // ─── Accept / Reject ──────────────────────────────────────────────
+  const handleAccept = async () => {
+    try {
+      await negotiationAPI.accept(chatId);
+      setChat(prev => prev ? { ...prev, status: 'ACCEPTED' } : prev);
+      onStatusChange?.(chatId, 'ACCEPTED');
+    } catch (err) {
+      console.error('Failed to accept:', err);
+    }
   };
 
-  const sentiment = getPriceSentiment();
-  const progressWidthClass = (() => {
-    const widthClasses = [
-      'w-[10%]',
-      'w-[15%]',
-      'w-[20%]',
-      'w-1/4',
-      'w-[30%]',
-      'w-[35%]',
-      'w-[40%]',
-      'w-[45%]',
-      'w-1/2',
-      'w-[55%]',
-      'w-[60%]',
-      'w-[65%]',
-      'w-[70%]',
-      'w-[75%]',
-      'w-[80%]',
-      'w-[85%]',
-      'w-[90%]',
-      'w-[95%]',
-      'w-full'
-    ];
+  const handleReject = async () => {
+    try {
+      await negotiationAPI.reject(chatId);
+      setChat(prev => prev ? { ...prev, status: 'REJECTED' } : prev);
+      onStatusChange?.(chatId, 'REJECTED');
+    } catch (err) {
+      console.error('Failed to reject:', err);
+    }
+  };
 
-    const percent = Math.min(100, Math.max(10, 50 + Number(calculateDiff()) * 2));
-    const snapped = Math.min(100, Math.max(10, Math.round(percent / 5) * 5));
-    const idx = Math.min(widthClasses.length - 1, Math.max(0, Math.round((snapped - 10) / 5)));
-    return widthClasses[idx];
-  })();
+  // ─── Send Contact Info ──────────────────────────────────────────────
+  const handleSendInfo = async () => {
+    if (sending || !isFarmer || !chat?.farmer?.farmerProfile) return;
 
-  return (
-    <div className="fixed inset-0 bg-white z-[60] flex flex-col animate-in fade-in slide-in-from-bottom duration-300">
-      <header className="bg-white border-b px-6 py-5 flex items-center justify-between sticky top-0 z-10 shadow-sm">
-        <div className="flex items-center gap-5">
-          <button onClick={onClose} className="w-12 h-12 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 active:scale-90 transition-all shadow-sm" aria-label="Back">
-            <i className="fas fa-chevron-left"></i>
-          </button>
-          <div className="flex items-center gap-4">
-            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-3xl shadow-inner ${isFarmer ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'}`}>
-               <i className={`fas ${isFarmer ? 'fa-user-tie' : 'fa-tractor'}`}></i>
-            </div>
-            <div>
-              <h3 className="font-black text-gray-900 leading-none mb-1.5">{isFarmer ? 'VegMart' : 'Ram Prasad'}</h3>
-              <div className="flex items-center gap-2">
-                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                 <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">{listing.cropName} • {listing.quantity}kg</p>
-              </div>
-            </div>
-          </div>
+    const { fullName, phone } = chat.farmer.farmerProfile;
+    if (!phone) {
+      error('Phone number not found in profile');
+      return;
+    }
+
+    const infoText = `📞 **Farmer Contact Details**\n\nNamaste! I am **${fullName}**.\nYou can call me at **${phone}** to discuss this deal directly.\n\nLet's connect! 🤝`;
+
+    setInputText('');
+    setSending(true);
+
+    try {
+      const newMsg = await negotiationAPI.sendMessage(chatId, infoText);
+      setMessages(prev => {
+        if (prev.some(m => m.id === newMsg.id)) return prev;
+        return [...prev, newMsg];
+      });
+      scrollToBottom();
+      success('Contact info sent!');
+    } catch (err) {
+      console.error('Failed to send info:', err);
+      error('Failed to send contact info');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // ─── Derived values ───────────────────────────────────────────────
+  const partnerName = isFarmer
+    ? chat?.buyer?.buyerProfile?.fullName || 'Buyer'
+    : chat?.farmer?.farmerProfile?.fullName || 'Farmer';
+  const cropName = chat?.listing?.crop?.name || 'Crop';
+  const isOpen = chat?.status === 'OPEN' || chat?.status === 'COUNTER';
+  const lastOfferMsg = [...messages].reverse().find(m => m.type === 'OFFER');
+  const canRespond = lastOfferMsg && lastOfferMsg.senderId !== userId && isOpen;
+
+  // ─── Loading state ────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center">
+        <div className="bg-white rounded-[40px] p-12 shadow-2xl text-center">
+          <i className="fas fa-spinner fa-spin text-3xl text-gray-400 mb-4"></i>
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Loading chat...</p>
         </div>
-        <button onClick={() => geminiService.speak("Support bridge established.")} className="w-12 h-12 rounded-2xl bg-gray-50 text-gray-400 flex items-center justify-center hover:bg-green-50 hover:text-green-600 transition-all shadow-sm" aria-label="Support">
-          <i className="fas fa-headset"></i>
-        </button>
-      </header>
+      </div>
+    );
+  }
 
-      <div className="bg-gray-900 text-white px-8 py-8 border-b border-gray-800">
-        <div className="flex justify-between items-end mb-8">
-          <div className="space-y-1.5">
-            <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em]">Benchmark</p>
-            <p className="text-2xl font-black tracking-tight">₹{marketPrice}<span className="text-xs text-gray-500 ml-1">/kg</span></p>
-          </div>
-          <div className="text-center bg-white/5 border border-white/10 px-8 py-4 rounded-[32px] backdrop-blur-md">
-            <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em] mb-1.5">Last Bid</p>
-            <p className="text-4xl font-black tracking-tighter text-amber-400">₹{currentOffer}</p>
-          </div>
-          <div className="space-y-1.5 text-right">
-            <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em]">Vs Mandi</p>
-            <p className={`text-2xl font-black tracking-tight ${sentiment.color}`}>
-              {Number(calculateDiff()) > 0 ? '+' : ''}{calculateDiff()}%
+  // ─── Render ────────────────────────────────────────────────────────
+  return (
+    <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 md:p-6">
+      <div className="bg-white w-full sm:max-w-2xl h-full sm:h-auto sm:max-h-[95vh] sm:rounded-[32px] shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom sm:zoom-in-95 duration-300">
+
+        {/* ─── Header ─────────────────────────────────────────────── */}
+        <div className={`bg-gradient-to-r ${isFarmer ? 'from-emerald-600 to-green-700' : 'from-blue-600 to-indigo-700'} px-5 py-4 flex items-center gap-4 shrink-0`}>
+          <button onClick={onClose} className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center text-white hover:bg-white/30 transition-colors">
+            <i className="fas fa-arrow-left text-sm"></i>
+          </button>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-white font-black text-sm truncate">{partnerName}</h3>
+            <p className="text-white/70 text-[10px] font-bold uppercase tracking-widest truncate">
+              {cropName} • {chat?.listing?.grade} • {chat?.requestedQuantity} kg
             </p>
           </div>
+          <div className="flex items-center gap-2">
+            {/* Status Badge */}
+            <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-wider ${chat?.status === 'ACCEPTED' ? 'bg-green-400/30 text-green-100' :
+              chat?.status === 'REJECTED' ? 'bg-red-400/30 text-red-100' :
+                'bg-white/20 text-white'
+              }`}>
+              {chat?.status}
+            </span>
+          </div>
         </div>
-        <div className="relative h-2 w-full bg-gray-800 rounded-full overflow-hidden">
-          <div 
-            className={`absolute top-0 left-0 h-full transition-all duration-1000 ease-out shadow-[0_0_12px_rgba(34,197,94,0.3)] ${sentiment.bg} ${progressWidthClass}`}
-          ></div>
-        </div>
-      </div>
 
-      <div ref={scrollRef} className="flex-grow overflow-y-auto p-8 space-y-10 bg-gray-50/50 no-scrollbar">
-        {messages.map(m => {
-          const isMe = m.sender === (isFarmer ? 'farmer' : 'buyer');
-          if (m.sender === 'system') {
+        {/* ─── Offer Summary Bar ──────────────────────────────────── */}
+        <div className="bg-gray-50 px-5 py-3 border-b border-gray-100 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <div className={`w-8 h-8 rounded-xl bg-${accentColor}-100 flex items-center justify-center`}>
+              <i className={`fas fa-tag text-${accentColor}-600 text-xs`}></i>
+            </div>
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Current Offer</p>
+              <p className="text-lg font-black text-gray-900">₹{chat?.currentOffer?.toLocaleString()}<span className="text-[10px] text-gray-400 font-bold">/kg</span></p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Listed Price</p>
+            <p className="text-sm font-bold text-gray-500">₹{chat?.listing?.expectedPrice?.toLocaleString()}/kg</p>
+          </div>
+        </div>
+
+        {/* ─── Closed Banner ──────────────────────────────────────── */}
+        {chat?.status === 'ACCEPTED' && (
+          <div className={`${isExpired ? 'bg-red-50 border-red-100' : 'bg-green-50 border-green-100'} border-b px-5 py-3 text-center shrink-0 transition-colors duration-500`}>
+            <div className="flex flex-col items-center gap-1">
+              <p className={`text-xs font-bold ${isExpired ? 'text-red-700' : 'text-green-700'}`}>
+                <i className={`fas ${isExpired ? 'fa-clock' : 'fa-check-circle'} mr-2`}></i>
+                {isExpired ? 'The 2-hour checkout window has expired.' : `Deal accepted at ₹${chat.currentOffer}/kg! 🎉`}
+              </p>
+              {!isExpired && timeLeft && (
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-green-600/60">Expires in:</span>
+                  <span className="bg-green-600 text-white text-[10px] font-black px-3 py-1 rounded-full shadow-sm shadow-green-200 animate-pulse font-mono">
+                    {timeLeft}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {chat?.status === 'REJECTED' && (
+          <div className="bg-red-50 border-b border-red-100 px-5 py-3 text-center shrink-0">
+            <p className="text-xs font-bold text-red-600">
+              <i className="fas fa-times-circle mr-2"></i>
+              Negotiation was declined.
+            </p>
+          </div>
+        )}
+
+        {/* ─── Messages ──────────────────────────────────────────── */}
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1" style={{ scrollBehavior: 'smooth' }}>
+          {messages.map((msg, idx) => {
+            const isMe = msg.senderId === userId;
+            const showDate = shouldShowDateSeparator(msg.createdAt, messages[idx - 1]?.createdAt);
+            // Determine if this offer is the latest one (for showing status + buttons)
+            const isLatestOffer = msg.type === 'OFFER' && msg.id === lastOfferMsg?.id;
+            // Offer status from per-message field (falls back to chat-level for backward compat)
+            const offerStatus = msg.type === 'OFFER'
+              ? (msg.offerStatus || (isLatestOffer
+                ? (chat?.status === 'ACCEPTED' ? 'accepted' : chat?.status === 'REJECTED' ? 'rejected' : 'pending')
+                : 'superseded'))
+              : null;
+            // Show Accept/Reject only if: it's the latest offer, I'm the receiver, and chat is still open
+            const showOfferActions = isLatestOffer && !isMe && isOpen;
+
             return (
-              <div key={m.id} className="flex justify-center">
-                <span className="bg-white/80 text-gray-400 text-[10px] font-black uppercase tracking-[0.2em] rounded-full px-6 py-2 border border-gray-100 backdrop-blur-md shadow-sm">
-                  <i className="fas fa-fingerprint mr-2 text-emerald-500"></i> {m.text}
-                </span>
-              </div>
-            );
-          }
+              <React.Fragment key={msg.id}>
+                {/* Date Separator */}
+                {showDate && (
+                  <div className="flex items-center justify-center py-3">
+                    <span className="bg-gray-100 text-gray-500 text-[9px] font-black uppercase tracking-widest px-4 py-1.5 rounded-full">
+                      {formatDate(msg.createdAt)}
+                    </span>
+                  </div>
+                )}
 
-          return (
-            <div key={m.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] relative ${isMe ? 'text-right' : 'text-left'}`}>
-                <div className={`inline-block rounded-[36px] overflow-hidden shadow-sm ${
-                  isMe ? 'bg-gray-900 text-white rounded-br-none' : 
-                  'bg-white text-gray-800 rounded-bl-none border border-gray-100'
-                }`}>
-                  {m.image && (
-                    <img src={m.image} className="w-full h-auto max-h-72 object-cover border-b border-white/10" alt="Harvest Photo" />
-                  )}
-                  {m.isOffer ? (
-                    <div className="p-6">
-                       <div className="flex items-center gap-3 mb-3">
-                          <div className={`w-10 h-10 rounded-2xl flex items-center justify-center ${isMe ? 'bg-green-600' : 'bg-blue-500'} text-white text-base shadow-sm`}>
-                             <i className="fas fa-tags"></i>
+                {/* Message Bubble container with animation */}
+                <div className={`flex ${isMe ? 'justify-end' : 'justify-start'} mb-1.5 animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                  <div className={`max-w-[80%] ${msg.type === 'OFFER' ? 'w-full max-w-[85%]' : ''}`}>
+                    {/* ─── Offer Card ─── */}
+                    {msg.type === 'OFFER' ? (
+                      <div className={`rounded-[24px] overflow-hidden shadow-sm border ${isMe
+                        ? `bg-gradient-to-br from-${accentColor}-50 to-${accentColor}-100/50 border-${accentColor}-200`
+                        : 'bg-gradient-to-br from-amber-50 to-orange-50 border-amber-200'
+                        }`}>
+                        <div className="px-5 py-4">
+                          {/* Header row */}
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <i className={`fas fa-tag text-xs ${isMe ? `text-${accentColor}-600` : 'text-amber-600'}`}></i>
+                              <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                                {isMe ? 'Your Offer' : 'Their Offer'}
+                              </span>
+                            </div>
+                            {/* Status Badge */}
+                            {msg.type === 'OFFER' && (
+                              <span className={`px-2.5 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider ${msg.offerStatus === 'accepted' ? 'bg-green-100 text-green-700' :
+                                msg.offerStatus === 'rejected' ? 'bg-red-100 text-red-600' :
+                                  msg.offerStatus === 'superseded' ? 'bg-gray-100 text-gray-400' :
+                                    'bg-amber-100 text-amber-700'
+                                }`}>
+                                {msg.offerStatus === 'superseded' ? 'Countered' :
+                                  msg.offerStatus === 'accepted' ? 'Accepted' :
+                                    msg.offerStatus === 'rejected' ? 'Rejected' : 'Pending'}
+                              </span>
+                            )}
                           </div>
-                          <span className="text-[11px] font-black uppercase tracking-widest opacity-60">Proposed Settlement</span>
-                       </div>
-                       <p className="text-3xl font-black mb-3 tracking-tighter">₹{m.offerValue}/kg</p>
-                       <p className="text-sm font-bold opacity-80 leading-relaxed">{m.text}</p>
-                       {!isMe && (
-                        <div className="grid grid-cols-2 gap-3 mt-6">
-                           <button onClick={handleAcceptClick} className="bg-emerald-600 text-white py-3.5 rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] shadow-lg shadow-emerald-100 active:scale-95 transition-all">Accept</button>
-                           <button onClick={() => handleAction('REJECT')} className="bg-white border-2 border-red-50 text-red-500 py-3.5 rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] active:scale-95 transition-all">Decline</button>
+
+                          {/* Offer Amount */}
+                          <p className="text-2xl font-black text-gray-900">
+                            ₹{msg.offerValue?.toLocaleString()}<span className="text-sm text-gray-400 font-bold">/kg</span>
+                          </p>
+                          <p className="text-[10px] text-gray-400 mt-1">{formatTime(msg.createdAt)}</p>
+
+                          {/* Accept / Reject Buttons (only for receiver on latest offer) */}
+                          {showOfferActions && (
+                            <div className="flex gap-2 mt-3 pt-3 border-t border-gray-200/60">
+                              <button
+                                onClick={handleReject}
+                                className="flex-1 px-4 py-2.5 rounded-2xl bg-red-100 text-red-600 text-[10px] font-black uppercase tracking-wider hover:bg-red-200 transition-all active:scale-95"
+                              >
+                                <i className="fas fa-times mr-1.5"></i>Reject
+                              </button>
+                              <button
+                                onClick={handleAccept}
+                                className="flex-1 px-4 py-2.5 rounded-2xl bg-green-600 text-white text-[10px] font-black uppercase tracking-wider hover:bg-green-700 transition-all active:scale-95 shadow-lg shadow-green-200"
+                              >
+                                <i className="fas fa-check mr-1.5"></i>Accept
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Accepted inline confirmation */}
+                          {isLatestOffer && offerStatus === 'accepted' && (
+                            <div className="mt-3 pt-3 border-t border-green-200/60 text-center">
+                              <p className="text-xs font-bold text-green-700 mb-2">
+                                <i className="fas fa-check-circle mr-1"></i> Offer Accepted
+                              </p>
+                              {userRole === 'BUYER' && onProceedToCheckout && (
+                                <button
+                                  onClick={() => onProceedToCheckout({
+                                    listingId: chat?.listingId || '',
+                                    quantity: chat?.requestedQuantity || 0,
+                                    price: msg.offerValue || 0,
+                                    negotiationId: chat?.id || ''
+                                  })}
+                                  disabled={isExpired}
+                                  className={`w-full py-2 ${isExpired ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 active:scale-95 shadow-green-100'} text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all shadow-md`}
+                                >
+                                  {isExpired ? 'Offer Expired' : 'Proceed to Checkout'}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                          {isLatestOffer && offerStatus === 'rejected' && (
+                            <div className="mt-3 pt-3 border-t border-red-200/60 text-center">
+                              <p className="text-xs font-bold text-red-500">
+                                <i className="fas fa-times-circle mr-1"></i> Offer Rejected
+                              </p>
+                            </div>
+                          )}
                         </div>
-                       )}
-                    </div>
-                  ) : (
-                    <p className={`text-sm font-bold leading-relaxed ${m.image ? 'p-5' : 'px-6 py-5'}`}>{m.text}</p>
-                  )}
+                      </div>
+                    ) : (
+                      /* ─── Text Bubble ─── */
+                      <div className={`px-4 py-2.5 rounded-[20px] transition-all hover:scale-[1.02] active:scale-[0.98] ${isMe
+                        ? `bg-${accentColor}-600 text-white rounded-br-md shadow-md shadow-${accentColor}-100`
+                        : 'bg-white text-gray-800 border border-gray-100 shadow-sm rounded-bl-md'
+                        }`}>
+                        <p className="text-[13px] leading-relaxed select-text">{msg.text}</p>
+                        <div className="flex items-center justify-end gap-1.5 mt-1">
+                          <p className={`text-[9px] ${isMe ? 'text-white/60' : 'text-gray-400'}`}>
+                            {formatTime(msg.createdAt)}
+                          </p>
+                          {isMe && (
+                            <i className="fas fa-check-double text-[8px] text-white/40"></i>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className={`mt-2.5 text-[9px] font-black uppercase tracking-widest text-gray-300 flex items-center gap-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
-                  <span>{m.timestamp}</span>
-                  {isMe && <i className="fas fa-check-double text-blue-400"></i>}
+              </React.Fragment>
+            );
+          })}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* ─── Input Area ────────────────────────────────────────── */}
+        {isOpen ? (
+          <div className="shrink-0 border-t border-gray-100 bg-white p-3">
+            {showOfferInput ? (
+              /* Offer Input */
+              <div className="flex items-center gap-2 animate-in slide-in-from-bottom duration-200">
+                <button onClick={() => setShowOfferInput(false)} className="w-10 h-10 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-400 hover:bg-gray-200 transition-colors">
+                  <i className="fas fa-times text-sm"></i>
+                </button>
+                <div className="flex-1 relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-sm">₹</span>
+                  <input
+                    type="number"
+                    value={offerAmount}
+                    onChange={(e) => setOfferAmount(e.target.value)}
+                    placeholder="Enter price per kg"
+                    className="w-full h-11 pl-8 pr-4 rounded-2xl bg-gray-50 border border-gray-200 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-400 transition-all"
+                    autoFocus
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendOffer()}
+                  />
                 </div>
+                <button
+                  onClick={handleSendOffer}
+                  disabled={!offerAmount || parseFloat(offerAmount) <= 0 || sending}
+                  className="h-11 px-5 rounded-2xl bg-amber-500 text-white font-black text-[10px] uppercase tracking-wider hover:bg-amber-600 transition-colors active:scale-95 shadow-lg shadow-amber-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <i className="fas fa-paper-plane mr-1"></i> Send
+                </button>
               </div>
-            </div>
-          );
-        })}
-        {isTyping && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-gray-100 rounded-[24px] px-6 py-4 flex gap-2 shadow-sm">
-              <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-bounce"></div>
-              <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-bounce [animation-delay:0.2s]"></div>
-              <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-bounce [animation-delay:0.4s]"></div>
-            </div>
-          </div>
-        )}
-      </div>
+            ) : (
+              /* Text Input */
+              <div className="flex items-center gap-2">
+                {/* Farmer Info Button */}
+                {isFarmer && (
+                  <button
+                    onClick={handleSendInfo}
+                    disabled={sending}
+                    className="w-10 h-10 rounded-2xl bg-green-50 flex items-center justify-center text-green-600 hover:bg-green-100 transition-colors active:scale-95 border border-green-100"
+                    title="Share Contact Info"
+                  >
+                    <i className="fas fa-address-card text-sm"></i>
+                  </button>
+                )}
 
-      <div className="p-6 bg-white border-t pb-10">
-        {attachedImage && (
-          <div className="mb-6 animate-in slide-in-from-bottom-4 duration-300">
-            <div className="relative inline-block">
-              <img src={attachedImage} className="w-28 h-28 rounded-[32px] object-cover border-4 border-white shadow-2xl" alt="Attachment Preview" />
-              <button 
-                onClick={() => setAttachedImage(null)}
-                className="absolute -top-3 -right-3 w-10 h-10 bg-red-500 text-white rounded-full flex items-center justify-center text-sm shadow-xl border-2 border-white active:scale-90"
-                aria-label="Remove image"
-              >
-                <i className="fas fa-times"></i>
-              </button>
-            </div>
+                <button
+                  onClick={() => setShowOfferInput(true)}
+                  className="w-10 h-10 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-600 hover:bg-amber-100 transition-colors active:scale-95"
+                  title="Make an offer"
+                >
+                  <i className="fas fa-tag text-sm"></i>
+                </button>
+                <div className="flex-1 relative">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="Type a message..."
+                    className="w-full h-11 px-4 rounded-2xl bg-gray-50 border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300 focus:border-gray-400 transition-all"
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                  />
+                </div>
+                <button
+                  onClick={handleSendMessage}
+                  disabled={!inputText.trim() || sending}
+                  className={`w-11 h-11 rounded-2xl bg-${accentColor}-600 text-white flex items-center justify-center hover:bg-${accentColor}-700 transition-colors active:scale-95 shadow-lg shadow-${accentColor}-200 disabled:opacity-40 disabled:cursor-not-allowed`}
+                >
+                  {sending ? <i className="fas fa-spinner fa-spin text-sm"></i> : <i className="fas fa-paper-plane text-sm"></i>}
+                </button>
+              </div>
+            )}
           </div>
-        )}
-
-        <div className="flex gap-4 items-end">
-          <input 
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={handleImagePick}
-            aria-label="Upload photo"
-          />
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="w-16 h-16 bg-gray-50 text-gray-400 rounded-[24px] flex items-center justify-center shrink-0 hover:bg-green-50 hover:text-green-600 transition-all active:scale-90 shadow-sm"
-            aria-label="Take photo"
-          >
-            <i className="fas fa-camera text-2xl"></i>
-          </button>
-          
-          <div className="flex-grow bg-gray-50 rounded-[32px] p-1.5 flex items-center border border-gray-100 focus-within:border-blue-200 focus-within:ring-8 focus-within:ring-blue-50 transition-all shadow-inner">
-            <input 
-              type="text"
-              placeholder="Suggest price or type message..."
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAction(isNaN(Number(inputValue)) || inputValue.trim() === '' ? 'SEND_TEXT' : 'COUNTER')}
-              className="flex-grow bg-transparent px-6 py-4 font-bold text-gray-900 outline-none placeholder:text-gray-300"
-              aria-label="Message or Offer"
-            />
-            <button 
-              onClick={() => handleAction(isNaN(Number(inputValue)) || inputValue.trim() === '' ? 'SEND_TEXT' : 'COUNTER')}
-              className="w-14 h-14 bg-gray-900 text-white rounded-full flex items-center justify-center mr-1 active:scale-90 shadow-lg"
-              aria-label="Send"
+        ) : chat?.status === 'ACCEPTED' && userRole === 'BUYER' && (
+          <div className="shrink-0 border-t border-gray-100 bg-white p-4">
+            <button
+              onClick={() => onProceedToCheckout?.({
+                listingId: chat?.listingId || '',
+                quantity: chat?.requestedQuantity || 0,
+                price: chat?.currentOffer || 0,
+                negotiationId: chat?.id || ''
+              })}
+              disabled={isExpired}
+              className={`w-full ${isExpired ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 hover:scale-[1.02] shadow-green-100 active:scale-[0.98]'} text-white py-4 rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl transition-all flex items-center justify-center gap-2`}
             >
-              <i className={`fas ${(isNaN(Number(inputValue)) || inputValue.trim() === '') && !attachedImage ? 'fa-paper-plane' : 'fa-arrow-up'} text-lg`}></i>
+              <i className={`fas ${isExpired ? 'fa-clock' : 'fa-shopping-cart'}`}></i>
+              {isExpired ? 'Negotiation Expired' : 'Proceed to Checkout'}
             </button>
           </div>
-        </div>
-        
-        <div className="flex justify-center gap-10 mt-6">
-           <button onClick={handleAcceptClick} className="text-[10px] font-black uppercase tracking-[0.25em] text-emerald-600 hover:text-emerald-700 transition-colors">Accept Deal</button>
-           <button onClick={() => handleAction('REJECT')} className="text-[10px] font-black uppercase tracking-[0.25em] text-red-400 hover:text-red-500 transition-colors">Withdraw Bid</button>
-        </div>
+        )}
       </div>
-
-      {showDeliveryModal && (
-        <div className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-          <div className="bg-white rounded-[32px] p-8 w-full max-w-md shadow-2xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-xl font-black text-gray-900 mb-6 text-center">Finalize Delivery</h3>
-            
-            <div className="space-y-4 mb-8">
-              <button
-                onClick={() => setDeliveryResponsibility('FARMER')}
-                className={`w-full p-6 rounded-[24px] border-2 text-left transition-all ${
-                  deliveryResponsibility === 'FARMER'
-                    ? 'border-green-500 bg-green-50'
-                    : 'border-gray-100 hover:border-gray-200'
-                }`}
-              >
-                <div className="flex items-center gap-4">
-                  <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${
-                    deliveryResponsibility === 'FARMER' ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-400'
-                  }`}>
-                    <i className="fas fa-tractor"></i>
-                  </div>
-                  <div>
-                    <h4 className={`font-bold ${deliveryResponsibility === 'FARMER' ? 'text-gray-900' : 'text-gray-600'}`}>Farmer Arranges</h4>
-                    <p className="text-xs text-gray-400 mt-1">Farmer handles transport to market</p>
-                  </div>
-                  {deliveryResponsibility === 'FARMER' && (
-                    <i className="fas fa-check-circle text-green-500 text-xl ml-auto"></i>
-                  )}
-                </div>
-              </button>
-
-              <button
-                onClick={() => setDeliveryResponsibility('BUYER')}
-                className={`w-full p-6 rounded-[24px] border-2 text-left transition-all ${
-                  deliveryResponsibility === 'BUYER'
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-100 hover:border-gray-200'
-                }`}
-              >
-                <div className="flex items-center gap-4">
-                  <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${
-                    deliveryResponsibility === 'BUYER' ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-400'
-                  }`}>
-                    <i className="fas fa-truck-loading"></i>
-                  </div>
-                  <div>
-                    <h4 className={`font-bold ${deliveryResponsibility === 'BUYER' ? 'text-gray-900' : 'text-gray-600'}`}>Buyer Arranges</h4>
-                    <p className="text-xs text-gray-400 mt-1">Buyer picks up from farm</p>
-                  </div>
-                  {deliveryResponsibility === 'BUYER' && (
-                    <i className="fas fa-check-circle text-blue-500 text-xl ml-auto"></i>
-                  )}
-                </div>
-              </button>
-            </div>
-
-            <div className="flex gap-4">
-              <button 
-                onClick={() => setShowDeliveryModal(false)}
-                className="flex-1 py-4 rounded-[20px] font-bold text-gray-500 hover:bg-gray-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={confirmAccept}
-                className="flex-1 bg-gray-900 text-white py-4 rounded-[20px] font-bold shadow-lg shadow-gray-200 active:scale-95 transition-all"
-              >
-                Confirm Deal
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

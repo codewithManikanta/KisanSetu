@@ -9,6 +9,17 @@ async function main() {
             { name: 'Wheat', category: 'Grain', icon: '🌾' },
             { name: 'Onion', category: 'Vegetable', icon: '🧅' },
             { name: 'Rice', category: 'Grain', icon: '🍚' },
+            { name: 'Potato', category: 'Vegetable', icon: '🥔' },
+            { name: 'Cotton', category: 'Cash Crop', icon: '🌱' },
+            { name: 'Sugarcane', category: 'Cash Crop', icon: '🎋' },
+            { name: 'Maize', category: 'Grain', icon: '🌽' },
+            { name: 'Chilli', category: 'Spice', icon: '🌶️' },
+            { name: 'Turmeric', category: 'Spice', icon: '🟡' },
+            { name: 'Groundnut', category: 'Oilseed', icon: '🥜' },
+            { name: 'Soybean', category: 'Pulse', icon: '🫘' },
+            { name: 'Chickpea', category: 'Pulse', icon: '🫘' },
+            { name: 'Mustard', category: 'Oilseed', icon: '🟨' },
+            { name: 'Sunflower', category: 'Oilseed', icon: '🌻' },
         ];
 
         for (const cropData of crops) {

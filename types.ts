@@ -25,14 +25,24 @@ export enum ListingStatus {
   PRICE_AGREED = 'PRICE_AGREED',
   LOCKED = 'LOCKED',
   IN_DELIVERY = 'IN_DELIVERY',
-  SOLD = 'SOLD'
+  SOLD = 'SOLD',
+  PAUSED = 'PAUSED'
+}
+
+export enum HarvestType {
+  STANDING_CROP = 'STANDING_CROP',
+  HARVESTED_CROP = 'HARVESTED_CROP',
+  PROCESSED_CLEANED_CROP = 'PROCESSED_CLEANED_CROP',
+  SEED_NURSERY = 'SEED_NURSERY'
 }
 
 export enum OrderStatus {
   ORDER_CREATED = 'ORDER_CREATED',
   DELIVERY_PENDING = 'DELIVERY_PENDING',
   IN_DELIVERY = 'IN_DELIVERY',
-  COMPLETED = 'COMPLETED'
+  AWAITING_PICKUP = 'AWAITING_PICKUP',
+  COMPLETED = 'COMPLETED',
+  CANCELLED = 'CANCELLED'
 }
 
 export enum DeliveryStatus {
@@ -40,24 +50,109 @@ export enum DeliveryStatus {
   TRANSPORTER_ASSIGNED = 'TRANSPORTER_ASSIGNED',
   PICKED_UP = 'PICKED_UP',
   IN_TRANSIT = 'IN_TRANSIT',
+  OUT_FOR_DELIVERY = 'OUT_FOR_DELIVERY',
   DELIVERED = 'DELIVERED',
   COMPLETED = 'COMPLETED'
 }
 
 export interface User {
   id: string;
-  phone: string;
+  phone?: string;
   role: UserRole;
   language: Language;
   name: string;
   gender?: Gender;
   email?: string;
+  profilePhoto?: string;
   bio?: string;
   location?: {
-    village: string;
+    address?: string;
+    village: string;    // Used as City/Village for Farmers
     district: string;
     state: string;
+    pincode?: string;
+    latitude?: number;
+    longitude?: number;
+    coordinates?: {
+      lat: number;
+      lng: number;
+    };
   };
+  farmerProfile?: FarmerProfile;
+  buyerProfile?: BuyerProfile;
+  transporterProfile?: TransporterProfile;
+  fullProfile?: any; // Generic storage for role-specific profile data
+}
+
+export interface FarmerProfile {
+  id: string;
+  userId: string;
+  fullName: string;
+  gender: string;
+  phone: string;
+  landSize: number;
+  village: string;
+  district: string;
+  state: string;
+  language: Language;
+  latitude?: number;
+  longitude?: number;
+  locationSource?: string;
+  address?: string;
+  pincode?: string;
+}
+
+export interface BuyerProfile {
+  id: string;
+  userId: string;
+  fullName: string;
+  gender: string;
+  phone: string;
+  city: string;
+  state: string;
+  language: Language;
+  companyName?: string;
+  gstNumber?: string;
+  latitude?: number;
+  longitude?: number;
+  locationSource?: string;
+  address?: string;
+  district?: string;
+  pincode?: string;
+}
+
+export interface TransporterProfile {
+  id: string;
+  userId: string;
+  fullName: string;
+  gender: string;
+  phone: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  vehicleType: string;
+  vehicleNumber: string;
+  capacity: number;
+  pricePerKm: number;
+  approvalStatus: string;
+  language: Language;
+  documents?: any;
+  rating: number;
+  reviewCount: number;
+  isVerified: boolean;
+  preferredRoutes?: string[];
+  isOnline: boolean;
+  totalEarnings: number;
+  serviceRange?: number;
+  latitude?: number;
+  longitude?: number;
+}
+
+export interface PublicUser {
+  id: string;
+  name?: string;
+  location?: string;
 }
 
 export interface Crop {
@@ -78,9 +173,12 @@ export interface Listing {
   msp?: number;
   grade: string;
   harvestDate: string;
+  harvestType?: HarvestType;
   images: string[];
   status: ListingStatus;
   location: string;
+  qualitySummary?: string;
+  saleDate?: string;
   crop?: Crop;
   farmer?: {
     id: string;
@@ -90,6 +188,7 @@ export interface Listing {
     district?: string;
     state?: string;
     location?: string;
+    farmerProfile?: FarmerProfile;
   };
 }
 
@@ -141,12 +240,20 @@ export interface Order {
   quantity: number;
   priceFinal: number;
   deliveryResponsibility: 'FARMER_ARRANGED' | 'BUYER_ARRANGED';
+  deliveryMode?: 'SELF_PICKUP' | 'ARRANGE_DELIVERY' | null;
+  selfPickupOtp?: string | null;
   orderStatus: OrderStatus;
+  // Location Data
+  deliveryLatitude?: number;
+  deliveryLongitude?: number;
+  deliveryAddress?: string;
+  distanceKm?: number;
+  estimatedDuration?: number;
   createdAt: string;
   updatedAt: string;
   listing?: Listing;
-  buyer?: User;
-  farmer?: User;
+  buyer?: User | PublicUser;
+  farmer?: User | PublicUser;
   delivery?: DeliveryDeal;
 }
 
@@ -163,6 +270,8 @@ export interface CartItem {
   quantity: number;
   lockedAt?: string;
   listing?: Listing & { crop: Crop; farmer: User };
+  negotiationId?: string;
+  negotiation?: NegotiatingChat;
 }
 
 export interface DeliveryDeal {
@@ -170,8 +279,8 @@ export interface DeliveryDeal {
   orderId: string;
   transporterId?: string;
   declinedBy?: string[];
-  pickupLocation: { address: string; lat: number; lng: number };
-  dropLocation: { address: string; lat: number; lng: number };
+  pickupLocation: { address: string; lat?: number; lng?: number };
+  dropLocation: { address: string; lat?: number; lng?: number };
   pickupOtp?: string;
   deliveryOtp?: string;
   status: DeliveryStatus;
@@ -184,4 +293,19 @@ export interface DeliveryDeal {
   updatedAt: string;
   order?: Order;
   transporter?: User;
+  proofPhotos?: string[];
+  pickupDistance?: number;
+}
+
+export interface VehicleType {
+  id: string;
+  name: string;
+  icon?: string;
+  capacity: number;
+  basePrice: number;
+  perKmPrice: number;
+  perKgPrice: number;
+  minPrice: number;
+  description?: string;
+  popular?: boolean;
 }
