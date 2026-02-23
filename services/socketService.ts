@@ -90,6 +90,12 @@ class SocketService {
         }
     }
 
+    leaveVehicleRoom(vehicleType: string): void {
+        if (this.socket && vehicleType) {
+            this.socket.emit('leave-vehicle-room', vehicleType);
+        }
+    }
+
     identify(userId: string): void {
         if (this.socket && userId) {
             this.socket.emit('identify', userId);
@@ -171,17 +177,17 @@ class SocketService {
         }
     }
 
-    onLocationSharingStatus(callback: (data: { 
-        enabled: boolean; 
-        started?: Date; 
-        ended?: Date 
+    onLocationSharingStatus(callback: (data: {
+        enabled: boolean;
+        started?: Date;
+        ended?: Date
     }) => void): () => void {
         const socket = this.socket;
         if (socket) {
             socket.on('locationSharing:status', callback);
             return () => socket.off('locationSharing:status', callback);
         }
-        return () => {};
+        return () => { };
     }
 
     emitLocationSharingToggle(deliveryId: string, enabled: boolean): void {

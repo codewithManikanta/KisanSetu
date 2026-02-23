@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useRoleTranslate } from '../hooks/useRoleTranslate';
@@ -8,8 +8,12 @@ const AdminLogin = () => {
     const { t } = useRoleTranslate();
     const rawBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
     const apiBase = rawBaseUrl.endsWith('/api') ? rawBaseUrl : `${rawBaseUrl.replace(/\/+$/, '')}/api`;
+
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [adminSecret, setAdminSecret] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
+    const [showSecret, setShowSecret] = useState(false);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -22,12 +26,12 @@ const AdminLogin = () => {
         setLoading(true);
 
         try {
-            const response = await fetch(`${apiBase}/auth/login`, {
+            const response = await fetch(`${apiBase}/auth/admin-login`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ email, password, role: 'ADMIN' }),
+                body: JSON.stringify({ email, password, adminSecret }),
             });
 
             const data = await response.json();
@@ -63,9 +67,9 @@ const AdminLogin = () => {
                         <ShieldCheck className="w-10 h-10 text-white" />
                     </div>
                     <h2 className="text-3xl sm:text-4xl font-extrabold bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
-                        Admin Login
+                        Admin Portal
                     </h2>
-                    <p className="mt-2 text-sm text-gray-600">Secure access for administrators</p>
+                    <p className="mt-2 text-sm text-gray-600">Secure access for administrators only</p>
                 </div>
 
                 <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
@@ -86,8 +90,8 @@ const AdminLogin = () => {
                                 {t('common.email_address')}
                             </label>
                             <div className="relative group">
-                                <div className="absolute inset-y-0 left-0 pl-2 md:pl-3 flex items-center pointer-events-none">
-                                    <span className="text-gray-400 text-lg md:text-xl">📧</span>
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <span className="text-gray-400 text-xl">📧</span>
                                 </div>
                                 <input
                                     id="email-address"
@@ -95,8 +99,8 @@ const AdminLogin = () => {
                                     type="email"
                                     autoComplete="email"
                                     required
-                                    className="appearance-none relative block w-full pl-10 md:pl-12 pr-3 md:pr-4 py-2.5 md:py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 hover:border-purple-400 focus:scale-[1.02] bg-white/50 backdrop-blur-sm"
-                                    placeholder="your@email.com"
+                                    className="appearance-none relative block w-full pl-12 pr-4 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 hover:border-purple-400 focus:scale-[1.02] bg-white/50 backdrop-blur-sm"
+                                    placeholder="admin@example.com"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
                                 />
@@ -109,26 +113,65 @@ const AdminLogin = () => {
                                 {t('common.password')}
                             </label>
                             <div className="relative group">
-                                <div className="absolute inset-y-0 left-0 pl-2 md:pl-3 flex items-center pointer-events-none">
-                                    <span className="text-gray-400 text-lg md:text-xl">🔒</span>
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <span className="text-gray-400 text-xl">🔒</span>
                                 </div>
                                 <input
                                     id="password"
                                     name="password"
-                                    type="password"
+                                    type={showPassword ? 'text' : 'password'}
                                     autoComplete="current-password"
                                     required
-                                    className="appearance-none relative block w-full pl-10 md:pl-12 pr-3 md:pr-4 py-2.5 md:py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 hover:border-purple-400 focus:scale-[1.02] bg-white/50 backdrop-blur-sm"
+                                    className="appearance-none relative block w-full pl-12 pr-12 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 hover:border-purple-400 focus:scale-[1.02] bg-white/50 backdrop-blur-sm"
                                     placeholder="••••••••"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                 />
+                                <button
+                                    type="button"
+                                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-purple-600 transition-colors"
+                                    onClick={() => setShowPassword(!showPassword)}
+                                    tabIndex={-1}
+                                >
+                                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                                </button>
                             </div>
+                        </div>
+
+                        {/* Admin Secret Key */}
+                        <div className="animate-slideInRight anim-delay-600">
+                            <label htmlFor="admin-secret" className="block text-sm font-semibold text-gray-700 mb-2">
+                                Admin Secret Key
+                            </label>
+                            <div className="relative group">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <span className="text-gray-400 text-xl">🛡️</span>
+                                </div>
+                                <input
+                                    id="admin-secret"
+                                    name="adminSecret"
+                                    type={showSecret ? 'text' : 'password'}
+                                    required
+                                    className="appearance-none relative block w-full pl-12 pr-12 py-3 border border-gray-300 placeholder-gray-400 text-gray-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300 hover:border-purple-400 focus:scale-[1.02] bg-white/50 backdrop-blur-sm"
+                                    placeholder="Enter admin secret key"
+                                    value={adminSecret}
+                                    onChange={(e) => setAdminSecret(e.target.value)}
+                                />
+                                <button
+                                    type="button"
+                                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-purple-600 transition-colors"
+                                    onClick={() => setShowSecret(!showSecret)}
+                                    tabIndex={-1}
+                                >
+                                    {showSecret ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                                </button>
+                            </div>
+                            <p className="mt-1 text-xs text-gray-400">Required for administrator access</p>
                         </div>
                     </div>
 
                     {/* Submit Button */}
-                    <div className="animate-slideInUp anim-delay-600">
+                    <div className="animate-slideInUp anim-delay-700">
                         <button
                             type="submit"
                             disabled={loading}
@@ -141,7 +184,8 @@ const AdminLogin = () => {
                                 </div>
                             ) : (
                                 <span className="flex items-center gap-2">
-                                    <span>Secure Login</span>
+                                    <ShieldCheck className="w-5 h-5" />
+                                    <span>Secure Admin Login</span>
                                     <span className="transform group-hover:translate-x-1 transition-transform duration-300">→</span>
                                 </span>
                             )}
@@ -149,7 +193,7 @@ const AdminLogin = () => {
                     </div>
 
                     {/* Back to User Login */}
-                    <div className="text-center text-sm animate-fadeIn anim-delay-700">
+                    <div className="text-center text-sm animate-fadeIn anim-delay-800">
                         <Link
                             to="/login"
                             className="font-medium text-gray-600 hover:text-purple-600 transition-colors"

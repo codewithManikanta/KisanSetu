@@ -390,6 +390,15 @@ exports.updateListing = async (req, res) => {
             updateData.harvestDate = new Date(updateData.harvestDate);
         }
 
+        if (updateData.saleDate) {
+            updateData.saleDate = new Date(updateData.saleDate);
+        }
+
+        if (updateData.cropId && !/^[0-9a-fA-F]{24}$/.test(updateData.cropId)) {
+            console.error('[ListingController] Invalid cropId format:', updateData.cropId);
+            delete updateData.cropId;
+        }
+
         if (updateData.harvestType) {
             const allowedHarvestTypes = new Set(['STANDING_CROP', 'HARVESTED_CROP', 'PROCESSED_CLEANED_CROP', 'SEED_NURSERY']);
             if (!allowedHarvestTypes.has(String(updateData.harvestType))) {
@@ -403,6 +412,8 @@ exports.updateListing = async (req, res) => {
         } else {
             delete updateData.location;
         }
+
+        console.log(`[ListingController] Updating listing ${id} with data:`, JSON.stringify(updateData, null, 2));
 
         const updatedListing = await prisma.listing.update({
             where: { id },
@@ -430,7 +441,11 @@ exports.updateListing = async (req, res) => {
         });
     } catch (error) {
         console.error('Update listing error:', error);
-        res.status(500).json({ error: 'Failed to update listing' });
+        res.status(500).json({
+            error: 'Failed to update listing',
+            details: error.message,
+            code: error.code // Prisma error code if available
+        });
     }
 };
 

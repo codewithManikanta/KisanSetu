@@ -256,7 +256,7 @@ const validateCoordinates = async (req, res) => {
  */
 const geocode = async (req, res) => {
     try {
-        const { q } = req.query;
+        const { q, limit = 1 } = req.query;
 
         if (!q) {
             return res.status(400).json({
@@ -265,9 +265,10 @@ const geocode = async (req, res) => {
             });
         }
 
-        console.log(`[LocationController] Geocoding query: ${q}`);
+        console.log(`[LocationController] Geocoding query: ${q}, limit: ${limit}`);
 
-        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`;
+        // Include addressdetails=1 to get granular fields for suggestions list
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=${limit}&addressdetails=1`;
 
         const response = await fetch(url, {
             headers: {

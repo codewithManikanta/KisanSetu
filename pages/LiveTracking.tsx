@@ -246,15 +246,32 @@ const LiveTracking: React.FC = () => {
     useEffect(() => {
         if (!mapReady) return; // Wait for map to be ready
 
+        const isPickedUp = ['PICKED_UP', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'COMPLETED'].includes(delivery?.status || '');
         const pickup = delivery?.pickupLocation;
         const drop = delivery?.dropLocation;
-        if (!hasCoords(pickup) || !hasCoords(drop)) {
+        const driver = hasCoords(driverLoc) ? driverLoc : null;
+
+        // Determine routing endpoints
+        // Use driver as start if available, otherwise fallback to pickup for context
+        const start = driver || pickup;
+        // Target is pickup until picked up, then drop
+        const target = isPickedUp ? drop : pickup;
+
+        if (!hasCoords(start) || !hasCoords(target)) {
             setRouteCoords([]);
             return;
         }
+
+        // If start and target are the same (e.g. at pickup point), just show a simple dot or empty route
+        if (start!.lat === target!.lat && start!.lng === target!.lng && !isPickedUp && driver) {
+            // If driver is at pickup but not yet in transit, maybe show pickup to drop for context?
+            // Actually, let's just stick to the requested logic.
+        }
+
         const fetchRoute = async () => {
             try {
-                const url = `https://router.project-osrm.org/route/v1/driving/${pickup!.lng},${pickup!.lat};${drop!.lng},${drop!.lat}?overview=full&geometries=geojson`;
+                // Use OSRM to fetch route
+                const url = `https://router.project-osrm.org/route/v1/driving/${start!.lng},${start!.lat};${target!.lng},${target!.lat}?overview=full&geometries=geojson`;
                 const res = await fetch(url);
                 const data = await res.json();
 
@@ -275,7 +292,18 @@ const LiveTracking: React.FC = () => {
                         duration: etaMinutes.toString()
                     });
                 } else {
-                    setRouteCoords([]);
+                    // Fallback to static pickup-to-drop if dynamic route fails and we have both
+                    if (hasCoords(pickup) && hasCoords(drop) && (start !== pickup || target !== drop)) {
+                        const fallbackUrl = `https://router.project-osrm.org/route/v1/driving/${pickup!.lng},${pickup!.lat};${drop!.lng},${drop!.lat}?overview=full&geometries=geojson`;
+                        const res2 = await fetch(fallbackUrl);
+                        const data2 = await res2.json();
+                        if (data2.routes?.[0]?.geometry?.coordinates) {
+                            const coords = data2.routes[0].geometry.coordinates.map((coord: number[]) => [coord[1], coord[0]] as [number, number]);
+                            setRouteCoords(coords);
+                        }
+                    } else {
+                        setRouteCoords([]);
+                    }
                 }
             } catch (error) {
                 console.error('Error fetching route:', error);
@@ -283,7 +311,7 @@ const LiveTracking: React.FC = () => {
             }
         };
         fetchRoute();
-    }, [delivery?.pickupLocation?.lat, delivery?.pickupLocation?.lng, delivery?.dropLocation?.lat, delivery?.dropLocation?.lng, mapReady]);
+    }, [delivery?.pickupLocation?.lat, delivery?.pickupLocation?.lng, delivery?.dropLocation?.lat, delivery?.dropLocation?.lng, delivery?.status, driverLoc?.lat, driverLoc?.lng, mapReady]);
 
     // Handle marking Out for Delivery when within 5km
     const handleMarkOutForDelivery = () => {
@@ -406,8 +434,9 @@ const LiveTracking: React.FC = () => {
     const totalKm = (totalDistance / 1000).toFixed(1);
     const etaDisplay = remainingEta > 0 ? `${remainingEta} min` : '--';
     const distanceDisplay = remainingKm > 0 ? `${remainingKm} km` : '--';
+    const isPickedUp = ['PICKED_UP', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'COMPLETED'].includes(delivery.status || '');
     const driverStatus = hasCoords(driver)
-        ? `GPS Active • ${etaDisplay} to destination`
+        ? `GPS Active • ${etaDisplay} to ${isPickedUp ? 'delivery' : 'pickup'}`
         : 'Waiting for driver';
 
     // Debug: Log driver position to console
@@ -441,8 +470,8 @@ const LiveTracking: React.FC = () => {
                     followDriver={followDriver}
                     onProgressUpdate={handleProgressUpdate}
                     onMapReady={handleMapReady}
-                    pickupLabel="Farm"
-                    dropLabel="Your Location"
+                    pickupLabel={isFarmer ? "Your Farm" : "Farm Location"}
+                    dropLabel={isFarmer ? "Buyer Location" : "Your Location"}
                     refreshTrigger={loading}
                 />
                 {showRouteHint && (
@@ -519,16 +548,16 @@ const LiveTracking: React.FC = () => {
                         <div className="flex items-start gap-3">
                             <div className="mt-1 w-2 h-2 rounded-full bg-emerald-500"></div>
                             <div>
-                                <p className="text-[10px] uppercase font-black tracking-widest text-gray-400 mb-1">Pickup</p>
-                                <p className="text-xs font-bold text-gray-700">{pickup?.address || 'Farm pickup location'}</p>
+                                <p className="text-[10px] uppercase font-black tracking-widest text-gray-400 mb-1">{dynamicPickupLabel}</p>
+                                <p className="text-xs font-bold text-gray-700">{pickup?.address || 'Pickup address'}</p>
                                 <p className="text-[10px] text-gray-400 mt-1">Farmer: {delivery.order?.farmer?.name || 'Farmer'}</p>
                             </div>
                         </div>
                         <div className="flex items-start gap-3">
                             <div className="mt-1 w-2 h-2 rounded-full bg-blue-500"></div>
                             <div>
-                                <p className="text-[10px] uppercase font-black tracking-widest text-gray-400 mb-1">Drop-off</p>
-                                <p className="text-xs font-bold text-gray-700">{drop?.address || delivery.order?.deliveryAddress || 'Buyer drop location'}</p>
+                                <p className="text-[10px] uppercase font-black tracking-widest text-gray-400 mb-1">{dynamicDropLabel}</p>
+                                <p className="text-xs font-bold text-gray-700">{drop?.address || delivery.order?.deliveryAddress || 'Drop-off address'}</p>
                                 <p className="text-[10px] text-gray-400 mt-1">Buyer: {delivery.order?.buyer?.name || 'Buyer'}</p>
                             </div>
                         </div>

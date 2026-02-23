@@ -163,6 +163,7 @@ const clearCache = () => {
 
 module.exports = {
     calculateDistance,
+    haversineDistance,
     clearCache,
     isValidCoordinate
 };

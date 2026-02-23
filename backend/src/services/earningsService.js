@@ -71,6 +71,23 @@ const emitEarningsUpdated = (io, transporterId, payload) => {
         timestamp: new Date().toISOString(),
         data: payload
     });
+
+    // Create persistent notification record
+    const amount = payload?.earning?.amount ?? payload?.amount ?? '';
+    const PrismaClient = require('@prisma/client').PrismaClient;
+    const prisma = new PrismaClient(); // Using a local instance or imported one
+    // Note: In this file defaultPrisma is used at the top.
+
+    const notificationPromise = defaultPrisma.notification.create({
+        data: {
+            userId: transporterId,
+            title: '💰 Earnings Updated',
+            message: `₹${amount} has been added to your earnings for a recently completed delivery.`,
+            type: 'earnings_updated',
+            deliveryId: payload?.earning?.deliveryId,
+            createdAt: new Date()
+        }
+    }).catch(err => console.error('[Notification] Failed to create earnings notification:', err));
 };
 
 const createEarningsService = (prisma) => {

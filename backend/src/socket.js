@@ -2,6 +2,7 @@ const { Server } = require("socket.io");
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient(); // Or use require("./config/db") if it works
 const getRoute = require("./services/osrmService");
+const vehicleService = require("./services/vehicleService");
 
 const isValidObjectId = (id) => typeof id === "string" && /^[0-9a-fA-F]{24}$/.test(id);
 
@@ -20,7 +21,7 @@ const initSocket = (server) => {
 
     io.on("connection", (socket) => {
         console.log(`Socket connected: ${socket.id}`);
-        
+
         // Add debug logging for all events
         socket.onAny((eventName, ...args) => {
             console.log(`[DEBUG] Received event: ${eventName}`, args);
@@ -52,9 +53,20 @@ const initSocket = (server) => {
         // --- Vehicle Matching ---
         socket.on("join-vehicle-room", (vehicleType) => {
             if (!vehicleType) return;
-            const roomName = `vehicle-${vehicleType}`;
-            socket.join(roomName);
-            console.log(`Socket ${socket.id} joined vehicle room: ${roomName}`);
+            const roomName = vehicleService.getVehicleRoomName(vehicleType);
+            if (roomName) {
+                socket.join(roomName);
+                console.log(`Socket ${socket.id} joined vehicle room: ${roomName}`);
+            }
+        });
+
+        socket.on("leave-vehicle-room", (vehicleType) => {
+            if (!vehicleType) return;
+            const roomName = vehicleService.getVehicleRoomName(vehicleType);
+            if (roomName) {
+                socket.leave(roomName);
+                console.log(`Socket ${socket.id} left vehicle room: ${roomName}`);
+            }
         });
 
 
@@ -86,7 +98,7 @@ const initSocket = (server) => {
                             where: { id: deliveryId },
                             select: { orderId: true }
                         });
-                        
+
                         if (delivery) {
                             await prisma.delivery.update({
                                 where: { id: deliveryId },
@@ -95,15 +107,15 @@ const initSocket = (server) => {
                                     lastLocationUpdate: new Date()
                                 }
                             }).catch(e => console.error("Failed to update location in DB:", e.message));
-                            
+
                             // Broadcast to order room (for buyer/farmer tracking)
-                            socket.to(`order-${delivery.orderId}`).emit("locationUpdate", { 
-                                lat, 
-                                lng, 
+                            socket.to(`order-${delivery.orderId}`).emit("locationUpdate", {
+                                lat,
+                                lng,
                                 timestamp: new Date(),
-                                deliveryId 
+                                deliveryId
                             });
-                            
+
                             console.log(`[Socket] Broadcasted location for delivery ${deliveryId} to order room ${delivery.orderId}`);
                         }
                     }
@@ -113,13 +125,13 @@ const initSocket = (server) => {
                         where: { id: deliveryId },
                         select: { orderId: true }
                     });
-                    
+
                     if (delivery) {
-                        socket.to(`order-${delivery.orderId}`).emit("locationUpdate", { 
-                            lat, 
-                            lng, 
+                        socket.to(`order-${delivery.orderId}`).emit("locationUpdate", {
+                            lat,
+                            lng,
                             timestamp: new Date(),
-                            deliveryId 
+                            deliveryId
                         });
                     }
                 }

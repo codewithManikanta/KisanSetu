@@ -49,7 +49,11 @@ app.use((req, res, next) => {
 
 // Routes
 app.get('/', (req, res) => {
-    res.json({ message: 'Welcome to KisanSetu API' });
+    res.json({ message: 'Welcome to KisanSetu' });
+});
+
+app.get('/api', (req, res) => {
+    res.json({ message: 'KisanSetu API is running correctly' });
 });
 
 // Auth Routes

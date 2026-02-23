@@ -31,7 +31,7 @@ const PaymentSuccessAnimation: React.FC<PaymentSuccessAnimationProps> = ({ onCom
     }, [onComplete]);
 
     return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/95 backdrop-blur-sm animate-fadeIn">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-white/95 backdrop-blur-sm animate-fadeIn">
             <div className="text-center max-w-md w-full p-8">
 
                 {/* Icon Animation Container */}

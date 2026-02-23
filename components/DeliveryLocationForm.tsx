@@ -39,21 +39,55 @@ const DeliveryLocationForm: React.FC<DeliveryLocationFormProps> = ({
     const [gpsError, setGpsError] = useState<string | null>(null);
     const [isGeocoding, setIsGeocoding] = useState(false);
 
+    // Suggestions states
+    const [suggestions, setSuggestions] = useState<any[]>([]);
+    const [showSuggestions, setShowSuggestions] = useState(false);
+    const [isSearching, setIsSearching] = useState(false);
+
     // Notify parent when location changes
     useEffect(() => {
         onLocationChange(location);
     }, [location, onLocationChange]);
 
-    // Debounce geocoding
+    // Debounce geocoding (for manual entry without suggestions)
     useEffect(() => {
         const timer = setTimeout(() => {
-            if (location.address && location.district && location.state && location.source === 'MANUAL') {
+            if (location.address && location.district && location.state && location.source === 'MANUAL' && !showSuggestions) {
                 geocodeAddress();
             }
-        }, 1500);
+        }, 2000);
 
         return () => clearTimeout(timer);
-    }, [location.address, location.district, location.state]);
+    }, [location.address, location.district, location.state, showSuggestions]);
+
+    // Fetch suggestions as user types
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (location.address && location.address.length > 3 && location.source === 'MANUAL') {
+                fetchSuggestions();
+            } else {
+                setSuggestions([]);
+                setShowSuggestions(false);
+            }
+        }, 600);
+
+        return () => clearTimeout(timer);
+    }, [location.address]);
+
+    const fetchSuggestions = async () => {
+        setIsSearching(true);
+        try {
+            const response = await locationAPI.geocode(location.address, 5);
+            if (response.success && response.data) {
+                setSuggestions(response.data);
+                setShowSuggestions(response.data.length > 0);
+            }
+        } catch (error) {
+            console.error('Failed to fetch suggestions:', error);
+        } finally {
+            setIsSearching(false);
+        }
+    };
 
     const geocodeAddress = async () => {
         const query = `${location.address}, ${location.district}, ${location.state}`;
@@ -162,6 +196,27 @@ const DeliveryLocationForm: React.FC<DeliveryLocationFormProps> = ({
         }));
     };
 
+    const handleSelectSuggestion = (suggestion: any) => {
+        const smart = formatSmartAddress(suggestion.address);
+
+        // Use the display name or parts to construct a friendly address
+        const displayAddr = suggestion.display_name.split(',').slice(0, 3).join(',').trim();
+
+        setLocation({
+            latitude: parseFloat(suggestion.lat),
+            longitude: parseFloat(suggestion.lon),
+            address: displayAddr || smart.fullAddress,
+            district: smart.district || '',
+            mandal: smart.mandal || '',
+            state: smart.state || '',
+            pincode: smart.pincode || '',
+            source: 'MANUAL'
+        });
+
+        setSuggestions([]);
+        setShowSuggestions(false);
+    };
+
     return (
         <div className="space-y-4">
             {/* GPS Fetch Button */}
@@ -231,14 +286,58 @@ const DeliveryLocationForm: React.FC<DeliveryLocationFormProps> = ({
                             </span>
                         )}
                     </div>
-                    <textarea
-                        value={location.address}
-                        onChange={(e) => handleInputChange('address', e.target.value)}
-                        placeholder="Enter your complete delivery address"
-                        rows={3}
-                        className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all resize-none"
-                        required
-                    />
+                    <div className="relative">
+                        <textarea
+                            value={location.address}
+                            onChange={(e) => handleInputChange('address', e.target.value)}
+                            onFocus={() => {
+                                if (suggestions.length > 0) setShowSuggestions(true);
+                            }}
+                            placeholder="Type to search your location or enter manually"
+                            rows={3}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all resize-none shadow-sm"
+                            required
+                        />
+
+                        {/* Suggestions Dropdown */}
+                        {showSuggestions && suggestions.length > 0 && (
+                            <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden animate-fadeIn backdrop-blur-md bg-white/95">
+                                <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                                    {suggestions.map((s, idx) => (
+                                        <button
+                                            key={idx}
+                                            type="button"
+                                            onClick={() => handleSelectSuggestion(s)}
+                                            className="w-full text-left px-5 py-4 hover:bg-green-50 border-b border-gray-50 last:border-0 transition-colors group"
+                                        >
+                                            <div className="flex items-start gap-3">
+                                                <div className="mt-1 w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center group-hover:bg-green-100 text-gray-400 group-hover:text-green-600 transition-colors">
+                                                    <i className="fas fa-location-dot"></i>
+                                                </div>
+                                                <div className="flex-1">
+                                                    <p className="text-sm font-bold text-gray-900 line-clamp-2">
+                                                        {s.display_name}
+                                                    </p>
+                                                    <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mt-1">
+                                                        {s.address?.city || s.address?.town || s.address?.suburb || 'Location'} • {s.address?.state || ''}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                                <div className="p-2 bg-gray-50 text-[10px] text-center text-gray-400 font-bold tracking-widest uppercase">
+                                    Powered by OpenStreetMap
+                                </div>
+                            </div>
+                        )}
+
+                        {isSearching && (
+                            <div className="absolute right-3 top-3">
+                                <i className="fas fa-spinner fa-spin text-green-500"></i>
+                            </div>
+                        )}
+                    </div>
                 </div>
 
                 {/* Mandal and District */}

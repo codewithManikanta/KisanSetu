@@ -16,6 +16,7 @@ const TestLocation = React.lazy(() => import('./pages/TestLocation'));
 const TestTracking = React.lazy(() => import('./pages/TestTracking'));
 const LiveTracking = React.lazy(() => import('./pages/LiveTracking'));
 const ArrangeDeliveryPage = React.lazy(() => import('./pages/ArrangeDeliveryPage'));
+const MagicLinkHandler = React.lazy(() => import('./pages/MagicLinkHandler'));
 
 
 // Loading Fallback
@@ -45,6 +46,7 @@ const App: React.FC = () => {
                 <Route path="/test-location" element={<TestLocation />} />
                 <Route path="/test-tracking" element={<TestTracking />} />
                 <Route path="/tracking/:deliveryId" element={<LiveTracking />} />
+                <Route path="/auth/magic-link" element={<MagicLinkHandler />} />
 
                 <Route path="/transporter/pending-approval" element={
                   <div className="flex h-screen items-center justify-center bg-gray-50 p-6">

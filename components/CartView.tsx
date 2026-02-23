@@ -254,10 +254,13 @@ const CartView: React.FC<CartViewProps> = ({
     };
 
     const handleCheckout = async () => {
+        setCheckoutLoading(true);
+
         // Validate location
         if (!deliveryLocation.address || !deliveryLocation.district || !deliveryLocation.state) {
             error('Please provide your delivery location before checkout');
             setShowLocationPermissionModal(true);
+            setCheckoutLoading(false);
             return;
         }
 
@@ -974,11 +977,13 @@ const CartView: React.FC<CartViewProps> = ({
 
                             setShowSuccessAnimation(false);
                             setShowCheckoutModal(false);
+                            setCheckoutLoading(false);
                             success('Order placed successfully! Funds held in Escrow.');
                             await loadCart();
                             if (onCheckoutComplete) onCheckoutComplete();
                         } catch (err: any) {
                             setShowSuccessAnimation(false);
+                            setCheckoutLoading(false);
                             error(err.message || 'Checkout failed');
                         }
                     }}

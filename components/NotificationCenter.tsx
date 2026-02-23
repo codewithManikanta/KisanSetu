@@ -9,7 +9,8 @@ interface Notification {
     title: string;
     message: string;
     type: 'info' | 'success' | 'warning' | 'error' | 'new_listing' | 'out_for_delivery' | 'pickup_confirmed' | 'delivery_completed' |
-    'negotiation_offer' | 'negotiation_accepted' | 'negotiation_rejected' | 'negotiation_new';
+    'negotiation_offer' | 'negotiation_accepted' | 'negotiation_rejected' | 'negotiation_new' |
+    'new_delivery_available' | 'transporter_assigned' | 'earnings_updated';
     read: boolean;
     timestamp: Date;
     deliveryId?: string;
@@ -165,6 +166,9 @@ const NotificationCenter: React.FC = () => {
             case 'out_for_delivery': return 'bg-orange-50 border-orange-200 text-orange-700';
             case 'pickup_confirmed': return 'bg-purple-50 border-purple-200 text-purple-700';
             case 'delivery_completed': return 'bg-green-50 border-green-200 text-green-700';
+            case 'new_delivery_available': return 'bg-indigo-50 border-indigo-200 text-indigo-700';
+            case 'transporter_assigned': return 'bg-cyan-50 border-cyan-200 text-cyan-700';
+            case 'earnings_updated': return 'bg-yellow-50 border-yellow-200 text-yellow-700';
             case 'negotiation_offer':
             case 'negotiation_new': return 'bg-amber-50 border-amber-200 text-amber-700';
             case 'negotiation_accepted': return 'bg-emerald-50 border-emerald-200 text-emerald-700';
@@ -182,6 +186,11 @@ const NotificationCenter: React.FC = () => {
             case 'negotiation_new': return 'fa-comments';
             case 'negotiation_accepted': return 'fa-check-double';
             case 'negotiation_rejected': return 'fa-times';
+            case 'new_delivery_available': return 'fa-box-open';
+            case 'transporter_assigned': return 'fa-shipping-fast';
+            case 'earnings_updated': return 'fa-wallet';
+            case 'out_for_delivery': return 'fa-truck-loading';
+            case 'delivery_completed': return 'fa-check-double';
             default: return 'fa-info-circle';
         }
     };

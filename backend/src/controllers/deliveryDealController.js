@@ -4,16 +4,11 @@ const prisma = new PrismaClient();
 const { triggerEarningsUpdateAfterCompletion } = require('../services/earningsService');
 const { releaseFundsForOrder } = require('../services/walletService'); // Import walletService
 const { resolvePickupLocation, resolveDropLocation } = require('../services/locationDefaultsService');
+const distanceService = require('../services/distanceService');
+const vehicleService = require('../services/vehicleService');
 
-// Vehicle type mapping to normalize between frontend vehicle names and transporter vehicle types
-const VEHICLE_TYPE_MAPPING = {
-    // Frontend vehicle names -> Normalized types
-    'Bike Delivery': ['bike', 'motorcycle', 'scooter', 'bike delivery', 'mini'],
-    'Auto Rickshaw': ['auto', 'auto rickshaw', 'rikshaw', 'three-wheeler'],
-    'Pickup Truck': ['pickup', 'pickup truck', 'small truck', 'mini truck', 'tempo'],
-    '4-Wheeler Truck': ['truck', '4-wheeler truck', 'lorry', 'heavy truck', 'truck delivery'],
-    'Tempo': ['tempo', 'mini truck', 'pickup', 'small truck']
-};
+// Vehicle mapping logic moved to backend/src/services/vehicleService.js
+
 
 // Function to handle location sharing status based on delivery status
 const handleLocationSharingStatus = async (deliveryId, newStatus) => {
@@ -43,21 +38,7 @@ const handleLocationSharingStatus = async (deliveryId, newStatus) => {
         console.log(`[LocationSharing] Status updated for delivery ${deliveryId}:`, locationSharingUpdate);
     }
 };
-const normalizeVehicleType = (vehicleName) => {
-    if (!vehicleName) return null;
-
-    const lowerVehicleName = vehicleName.toLowerCase().trim();
-
-    // Find matching vehicle type
-    for (const [frontendName, variations] of Object.entries(VEHICLE_TYPE_MAPPING)) {
-        if (variations.some(variation => lowerVehicleName.includes(variation) || variation.includes(lowerVehicleName))) {
-            return frontendName;
-        }
-    }
-
-    // If no exact match found, return the original name (for backward compatibility)
-    return vehicleName;
-};
+const normalizeVehicleType = vehicleService.normalizeVehicleType;
 
 // ... (code)
 
@@ -212,7 +193,7 @@ exports.getMyDeliveries = async (req, res) => {
         });
 
         const formatted = deals.map(d => {
-            if (d.order?.listing?.farmer) d.order.listing.farmer = formatFarmerUser(d.order.listing.farmer);
+            if (d.order?.farmer) d.order.farmer = formatFarmerUser(d.order.farmer);
             if (d.order?.buyer) d.order.buyer = formatBuyerUser(d.order.buyer);
             if (d.transporter) d.transporter = formatTransporterUser(d.transporter);
             return d;
@@ -462,8 +443,41 @@ exports.payForDeliveryDeal = async (req, res) => {
                 dropLocation: redactLocation(updatedDeal.dropLocation)
             };
 
-            if (safeDeal.selectedVehicle) {
-                io.to(`vehicle-${safeDeal.selectedVehicle}`).emit('delivery:created', { deliveryDeal: safeDeal });
+            // Create persistent notifications for relevant transporters
+            if (updatedDeal.selectedVehicle) {
+                try {
+                    const matchingTransporters = await prisma.transporterProfile.findMany({
+                        where: {
+                            vehicleType: updatedDeal.selectedVehicle,
+                            approvalStatus: 'APPROVED'
+                        },
+                        select: { userId: true }
+                    });
+
+                    if (matchingTransporters.length > 0) {
+                        const notificationData = matchingTransporters.map(t => ({
+                            userId: t.userId,
+                            title: '📦 New Delivery Available',
+                            message: `A new ${updatedDeal.selectedVehicle} delivery is available! ₹${updatedDeal.totalCost} for ${updatedDeal.distance}km.`,
+                            type: 'new_delivery_available',
+                            deliveryId: updatedDeal.id,
+                            createdAt: new Date()
+                        }));
+
+                        await prisma.notification.createMany({
+                            data: notificationData
+                        });
+                    }
+                } catch (err) {
+                    console.error('[Notification] Failed to create notifications for transporters:', err);
+                }
+
+                // Emit WebSocket event for new delivery deal (now that it's paid and available)
+                const roomName = vehicleService.getVehicleRoomName(updatedDeal.selectedVehicle);
+                if (roomName) {
+                    io.to(roomName).emit('delivery:created', { deliveryDeal: safeDeal });
+                    console.log(`[PayForDelivery] Notification sent to room ${roomName} for vehicle type ${updatedDeal.selectedVehicle}`);
+                }
             }
             io.to('delivery-deals').emit('delivery:created', { deliveryDeal: safeDeal });
         }
@@ -475,24 +489,19 @@ exports.payForDeliveryDeal = async (req, res) => {
     }
 };
 
-// Helper to calculate distance in km between two coordinates
-const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
-    const R = 6371; // Radius of the earth in km
-    const dLat = (lat2 - lat1) * (Math.PI / 180);
-    const dLon = (lon2 - lon1) * (Math.PI / 180);
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const d = R * c; // Distance in km
-    return d;
-};
+// Helper to calculate distance in km - deprecated, use distanceService.haversineDistance
+// const getDistanceFromLatLonInKm = ... (removed)
+
 
 // Get available deals for transporters
 exports.getAvailableDeals = async (req, res) => {
     try {
         const { latitude, longitude } = req.query;
+        // Prevent Express ETag caching which can serve stale 304 responses
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+
         console.log(`[AvailableDeals] Fetching deals for transporter ${req.user.id}. Live Loc: ${latitude}, ${longitude}`);
 
         if (req.user.role !== 'TRANSPORTER') {
@@ -514,22 +523,79 @@ exports.getAvailableDeals = async (req, res) => {
         const normalizedTransporterVehicleType = normalizeVehicleType(transporterProfile.vehicleType);
         console.log(`[AvailableDeals] Normalized vehicle type: ${normalizedTransporterVehicleType}`);
 
-        // We only want to show deals where paymentStatus is HELD (escrowed)
+        // Match compatible vehicles based on mapping
+        const compatibleVehicles = vehicleService.VEHICLE_TYPE_MAPPING[normalizedTransporterVehicleType] || [normalizedTransporterVehicleType];
+        // Ensure both the normalized name and its variations are included
+        const vehicleSearchTerms = Array.from(new Set([normalizedTransporterVehicleType, ...compatibleVehicles]));
+
+        console.log(`[AvailableDeals] Searching for deals. Transporter: ${req.user.id}, Vehicle: ${normalizedTransporterVehicleType}. Search Terms: ${vehicleSearchTerms.join(', ')}`);
+
+        // DEEP DIAGNOSTICS: Check counts for each filter part
+        const countStatus = await prisma.delivery.count({ where: { status: 'WAITING_FOR_TRANSPORTER' } });
+        const countPayment = await prisma.delivery.count({ where: { paymentStatus: 'HELD' } });
+        const countCombined = await prisma.delivery.count({ where: { status: 'WAITING_FOR_TRANSPORTER', paymentStatus: 'HELD' } });
+        const countNoTransporter = await prisma.delivery.count({ where: { status: 'WAITING_FOR_TRANSPORTER', paymentStatus: 'HELD', transporterId: null } });
+        const countWithVehicle = await prisma.delivery.count({
+            where: {
+                status: 'WAITING_FOR_TRANSPORTER',
+                paymentStatus: 'HELD',
+                transporterId: null,
+                selectedVehicle: { in: vehicleSearchTerms }
+            }
+        });
+
+        console.log(`[AvailableDeals] GRANULAR COUNTS:`);
+        console.log(`- status=WAITING: ${countStatus}`);
+        console.log(`- payment=HELD: ${countPayment}`);
+        console.log(`- WAITING + HELD: ${countCombined}`);
+        console.log(`- + transporterId=null: ${countNoTransporter}`);
+        console.log(`- + vehicle match: ${countWithVehicle}`);
+
+        // Check if the transporter has declined anything
+        const declinedCount = await prisma.delivery.count({ where: { declinedBy: { has: req.user.id } } });
+        console.log(`- Transporter ${req.user.id} has declined ${declinedCount} deals.`);
+
+        // Specific check for IDs seen in user logs
+        const knownIds = ["6998a108ef49cbf353509b08", "6999dfd21b2bc5c8fe861f1d"];
+        for (const kid of knownIds) {
+            const d = await prisma.delivery.findUnique({ where: { id: kid } });
+            if (d) {
+                console.log(`[AvailableDeals] DEBUG DEAL ${kid}: status=${d.status}, payment=${d.paymentStatus}, vehicle=${d.selectedVehicle}, tId=${d.transporterId}, declinedBy=[${d.declinedBy.join(',')}]`);
+            }
+        }
+
+        // Debug: Check if any deals exist in the pool at all
+        const allPendingCount = await prisma.delivery.count({
+            where: { status: 'WAITING_FOR_TRANSPORTER' }
+        });
+        const allHeldCount = await prisma.delivery.count({
+            where: { paymentStatus: 'HELD' }
+        });
+        const allDealsCount = await prisma.delivery.count();
+        console.log(`[AvailableDeals] POOL STATS: Total status=WAITING: ${allPendingCount}, Total status=HELD: ${allHeldCount}, Grand Total: ${allDealsCount}`);
+
+        if (allDealsCount > 0) {
+            const sampleDeals = await prisma.delivery.findMany({
+                where: {
+                    OR: [
+                        { status: 'WAITING_FOR_TRANSPORTER' },
+                        { status: 'PENDING_PAYMENT' }
+                    ]
+                },
+                take: 10,
+                select: { id: true, selectedVehicle: true, paymentStatus: true, status: true, transporterId: true }
+            });
+            console.log(`[AvailableDeals] INSPECTING DEALS:`, JSON.stringify(sampleDeals, null, 2));
+        }
+
+        // Fetch ALL paid WAITING deals - filter vehicle, declinedBy, transporterId in JS
+        // This avoids multiple Prisma+MongoDB quirks with OR/in/NOT/null on arrays/nullable fields
         const deals = await prisma.delivery.findMany({
             where: {
                 paymentStatus: 'HELD',
-                OR: [
-                    {
-                        status: 'WAITING_FOR_TRANSPORTER',
-                        transporterId: undefined, // Only show if not yet assigned to anyone (MongoDB stores as undefined)
-                        selectedVehicle: normalizedTransporterVehicleType,
-                        NOT: { declinedBy: { has: req.user.id } }
-                    },
-                    {
-                        transporterId: req.user.id // Specifically assigned to me OR accepted by me
-                    }
-                ]
+                status: 'WAITING_FOR_TRANSPORTER',
             },
+
             include: {
                 order: {
                     include: {
@@ -553,7 +619,26 @@ exports.getAvailableDeals = async (req, res) => {
             orderBy: { createdAt: 'desc' }
         });
 
-        console.log(`[AvailableDeals] Found ${deals.length} potential deals (HELD + status check)`);
+        console.log(`[AvailableDeals] Raw DB result: ${deals.length} HELD+WAITING deals found`);
+
+        // Apply all filtering in JavaScript to avoid Prisma+MongoDB quirks
+        const vehicleSearchTermsLower = vehicleSearchTerms.map(v => v.toLowerCase());
+
+        const filteredByRelev = deals.filter(d => {
+            // 1. Must not already be assigned to a transporter
+            if (d.transporterId !== null) return false;
+            // 2. Must match vehicle type (case-insensitive)
+            const dealVehicle = (d.selectedVehicle || '').toLowerCase();
+            if (!vehicleSearchTermsLower.includes(dealVehicle)) {
+                console.log(`[AvailableDeals] Deal ${d.id} vehicle "${d.selectedVehicle}" not in [${vehicleSearchTerms.join(', ')}]`);
+                return false;
+            }
+            // 3. Must not have been declined by this transporter
+            if (d.declinedBy?.includes(req.user.id)) return false;
+            return true;
+        });
+
+        console.log(`[AvailableDeals] After JS filters (vehicle+transporter+declined): ${filteredByRelev.length} deals match`);
 
         // Filter by Service Range
         const serviceRange = parseFloat(transporterProfile.serviceRange || 0);
@@ -561,12 +646,12 @@ exports.getAvailableDeals = async (req, res) => {
         const driverLat = latitude ? parseFloat(latitude) : transporterProfile.latitude;
         const driverLng = longitude ? parseFloat(longitude) : transporterProfile.longitude;
 
-        const filteredDeals = deals.map(d => {
+        const filteredDeals = filteredByRelev.map(d => {
             // Always show my own accepted/assigned deals
             if (d.transporterId === req.user.id) {
-                console.log(`[AvailableDeals] Deal ${d.id} is already assigned to this transporter.`);
-                return { ...d, pickupDistance: 0 }; // Already at/near it perhaps
+                return { ...d, pickupDistance: 0 };
             }
+
 
             // For available deals, check range and calculate distance
             let pickupDistance = null;
@@ -576,11 +661,16 @@ exports.getAvailableDeals = async (req, res) => {
 
                 if (pickupLat && pickupLng) {
                     try {
-                        pickupDistance = getDistanceFromLatLonInKm(driverLat, driverLng, pickupLat, pickupLng);
+                        pickupDistance = distanceService.haversineDistance(driverLat, driverLng, pickupLat, pickupLng);
+                        console.log(`[AvailableDeals] Distance for deal ${d.id}: ${pickupDistance.toFixed(2)}km`);
                     } catch (e) {
                         console.error(`[AvailableDeals] Distance calculation failed for deal ${d.id}:`, e.message);
                     }
+                } else {
+                    console.warn(`[AvailableDeals] Missing pickup coordinates for deal ${d.id}`);
                 }
+            } else {
+                console.log(`[AvailableDeals] Skipping distance check for deal ${d.id} (driver location missing)`);
             }
 
             // If it's waiting for a transporter, apply the service range filter if configured
@@ -715,6 +805,42 @@ exports.acceptDeal = async (req, res) => {
         // Emit WebSocket event
         if (req.app.get('io')) {
             const io = req.app.get('io');
+
+            // Create persistent notifications for Farmer and Buyer
+            try {
+                const order = await prisma.order.findUnique({
+                    where: { id: deal.orderId },
+                    select: { farmerId: true, buyerId: true, listing: { include: { crop: true } } }
+                });
+
+                if (order) {
+                    const transporterName = updatedDeal.transporter?.transporterProfile?.fullName || 'A transporter';
+                    const cropName = order.listing?.crop?.name || 'order';
+
+                    await prisma.notification.createMany({
+                        data: [
+                            {
+                                userId: order.farmerId,
+                                title: '🚚 Transporter Assigned',
+                                message: `${transporterName} has been assigned to pick up your ${cropName}.`,
+                                type: 'transporter_assigned',
+                                deliveryId: updatedDeal.id,
+                                createdAt: new Date()
+                            },
+                            {
+                                userId: order.buyerId,
+                                title: '🚚 Transporter Assigned',
+                                message: `${transporterName} has been assigned to deliver your ${cropName}.`,
+                                type: 'transporter_assigned',
+                                deliveryId: updatedDeal.id,
+                                createdAt: new Date()
+                            }
+                        ]
+                    });
+                }
+            } catch (err) {
+                console.error('[Notification] Failed to create assignment notifications:', err);
+            }
 
             // Notify specific order room (Farmer/Buyer)
             io.to(`order-${deal.orderId}`).emit('delivery:accepted', {
@@ -925,6 +1051,42 @@ exports.verifyOtp = async (req, res) => {
             });
         }
 
+        // Create persistent notifications for Pickup
+        if (updateData.status === 'PICKED_UP') {
+            try {
+                const order = await prisma.order.findUnique({
+                    where: { id: deal.orderId },
+                    select: { farmerId: true, buyerId: true, listing: { include: { crop: true } } }
+                });
+
+                if (order) {
+                    const cropName = order.listing?.crop?.name || 'order';
+                    await prisma.notification.createMany({
+                        data: [
+                            {
+                                userId: order.farmerId,
+                                title: '📦 Package Picked Up',
+                                message: `Your ${cropName} has been picked up by the transporter.`,
+                                type: 'pickup_confirmed',
+                                deliveryId: updatedDeal.id,
+                                createdAt: new Date()
+                            },
+                            {
+                                userId: order.buyerId,
+                                title: '🚚 Order on the Way',
+                                message: `Your ${cropName} has been picked up and is on its way!`,
+                                type: 'pickup_confirmed',
+                                deliveryId: updatedDeal.id,
+                                createdAt: new Date()
+                            }
+                        ]
+                    });
+                }
+            } catch (err) {
+                console.error('[Notification] Failed to create pickup notifications:', err);
+            }
+        }
+
         // Emit WebSocket event
         if (req.app.get('io')) {
             const io = req.app.get('io');
@@ -955,6 +1117,40 @@ exports.verifyOtp = async (req, res) => {
                     await releaseFundsForOrder(deal.orderId, io);
                 } catch (e) {
                     console.error('Earnings update or Fund release failed after completion:', e);
+                }
+
+                // Create persistent notifications for Farmer and Buyer
+                try {
+                    const order = await prisma.order.findUnique({
+                        where: { id: deal.orderId },
+                        select: { farmerId: true, buyerId: true, listing: { include: { crop: true } } }
+                    });
+
+                    if (order) {
+                        const cropName = order.listing?.crop?.name || 'order';
+                        await prisma.notification.createMany({
+                            data: [
+                                {
+                                    userId: order.farmerId,
+                                    title: '✅ Delivery Completed!',
+                                    message: `The delivery of ${cropName} is complete. Payment released.`,
+                                    type: 'delivery_completed',
+                                    deliveryId: updatedDeal.id,
+                                    createdAt: new Date()
+                                },
+                                {
+                                    userId: order.buyerId,
+                                    title: '✅ Delivery Completed!',
+                                    message: `Your ${cropName} has been successfully delivered.`,
+                                    type: 'delivery_completed',
+                                    deliveryId: updatedDeal.id,
+                                    createdAt: new Date()
+                                }
+                            ]
+                        });
+                    }
+                } catch (err) {
+                    console.error('[Notification] Failed to create completion notifications:', err);
                 }
 
                 // Send notification to farmer when delivery is completed
@@ -1032,7 +1228,7 @@ exports.updateStatus = async (req, res) => {
                         userId: order.buyerId,
                         title: 'Order Out for Delivery',
                         message: `Your order for ${order.listing.crop.name} is now out for delivery! Please be alert to receive it.`,
-                        type: 'info',
+                        type: 'out_for_delivery',
                         chatId: deal.orderId,
                         createdAt: new Date()
                     }

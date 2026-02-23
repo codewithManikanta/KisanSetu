@@ -152,8 +152,10 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
     socketService.joinUserRoom(user.id);
 
     // Join vehicle specific room to get targeted delivery requests
-    if (user.transporterProfile?.vehicleType) {
-      socketService.joinVehicleRoom(user.transporterProfile.vehicleType);
+    const vType = user.fullProfile?.vehicleType || user.transporterProfile?.vehicleType;
+    if (vType) {
+      socketService.joinVehicleRoom(vType);
+      console.log(`[TransporterDashboard] Joining vehicle room: ${vType}`);
     }
 
     const handler = (data: any) => {
@@ -169,8 +171,12 @@ const TransporterDashboard: React.FC<TransporterDashboardProps> = ({
     return () => {
       socketService.offEarningsUpdated(handler);
       socketService.leaveUserRoom(user.id);
+      if (vType) {
+        socketService.leaveVehicleRoom(vType);
+        console.log(`[TransporterDashboard] Leaving vehicle room (cleanup): ${vType}`);
+      }
     };
-  }, [user.id, onRefresh]);
+  }, [user.id, user.fullProfile?.vehicleType, user.transporterProfile?.vehicleType]); // More specific dependencies to prevent flicker
 
   // Real-time location sharing for active jobs
   useEffect(() => {

@@ -304,6 +304,10 @@ export const deliveryDealAPI = {
         const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${drop.lng},${drop.lat}?overview=false`;
         return fetch(osrmUrl).then(response => response.json());
     },
+
+    getMy: () => {
+        return fetchWithAuth(`${API_URL}/delivery-deals/my`);
+    },
 };
 
 // Negotiation APIs
@@ -440,8 +444,8 @@ export const locationAPI = {
         });
     },
 
-    geocode: (query: string) => {
-        return fetchWithAuth(`${API_URL}/location/geocode?q=${encodeURIComponent(query)}`);
+    geocode: (query: string, limit: number = 1) => {
+        return fetchWithAuth(`${API_URL}/location/geocode?q=${encodeURIComponent(query)}&limit=${limit}`);
     },
 
     reverseGeocode: (lat: number, lon: number) => {

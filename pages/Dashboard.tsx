@@ -140,8 +140,24 @@ const Dashboard: React.FC = () => {
                 });
 
                 // Fetch Available/My Deliveries with live location if available
-                const dealsRes = await deliveryDealAPI.getAvailable(currentLocation?.lat, currentLocation?.lng);
-                setDeliveries(dealsRes.deals || []);
+                // We need BOTH available deals (nearby) AND my assigned/completed deals
+                const [availableRes, myDealsRes] = await Promise.all([
+                    deliveryDealAPI.getAvailable(currentLocation?.lat, currentLocation?.lng),
+                    deliveryDealAPI.getMy()
+                ]);
+
+                const availableDeals = availableRes.deals || [];
+                const myDeals = myDealsRes.deliveries || [];
+
+                // Combine and remove duplicates based on ID
+                const allDeals = [...availableDeals];
+                myDeals.forEach((md: any) => {
+                    if (!allDeals.find(ad => ad.id === md.id)) {
+                        allDeals.push(md);
+                    }
+                });
+
+                setDeliveries(allDeals);
             } else if (user.role === 'BUYER') {
 
 

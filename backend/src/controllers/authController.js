@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
+const vehicleService = require('../services/vehicleService');
 
 const generateToken = (user) => {
     return jwt.sign(
@@ -75,11 +76,16 @@ const mapProfile = (user, profile) => {
                 vehicleNumber: profile.vehicleNumber,
                 capacity: profile.capacity,
                 pricePerKm: profile.pricePerKm,
-            }
+            },
+            transporterProfile: profile // Explicitly include for frontend convenience
         };
     }
 
-    return base;
+    return {
+        ...base,
+        name: user.name || (user.role === 'ADMIN' ? 'Administrator' : 'User'),
+        phone: user.phone || '',
+    };
 };
 
 // Signup Controller
@@ -172,7 +178,7 @@ const login = async (req, res) => {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        const profile = user.farmerProfile || user.buyerProfile || user.transporterProfile;
+        const profile = user.farmerProfile || user.buyerProfile || user.transporterProfile || null;
         const token = generateToken(user);
 
         res.status(200).json({
@@ -202,7 +208,7 @@ const getMe = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        const profile = user.farmerProfile || user.buyerProfile || user.transporterProfile;
+        const profile = user.farmerProfile || user.buyerProfile || user.transporterProfile || null;
         res.json(mapProfile(user, profile));
     } catch (error) {
         console.error('getMe error:', error);
@@ -276,7 +282,9 @@ const updateProfile = async (req, res) => {
 
             // Fleet/Vehicle details update
             if (updates.fleet) {
-                if (updates.fleet.vehicleType) dataToUpdate.vehicleType = updates.fleet.vehicleType;
+                if (updates.fleet.vehicleType) {
+                    dataToUpdate.vehicleType = vehicleService.normalizeVehicleType(updates.fleet.vehicleType);
+                }
                 if (updates.fleet.vehicleNumber) dataToUpdate.vehicleNumber = updates.fleet.vehicleNumber;
                 if (updates.fleet.capacity !== undefined) dataToUpdate.capacity = parseFloat(updates.fleet.capacity);
                 if (updates.fleet.pricePerKm !== undefined) dataToUpdate.pricePerKm = parseFloat(updates.fleet.pricePerKm);
@@ -315,4 +323,203 @@ const updateProfile = async (req, res) => {
     }
 };
 
-module.exports = { signup, login, getMe, updateProfile };
+const admin = require('../config/firebaseAdmin');
+
+// ... (previous functions mapping profiles)
+
+// Firebase Login Controller
+const firebaseLogin = async (req, res) => {
+    const { idToken, role, email: providedEmail, name, photo } = req.body;
+
+    if (!idToken || !role) {
+        return res.status(400).json({ message: 'idToken and role are required' });
+    }
+
+    try {
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const { uid, email: firebaseEmail, phone_number } = decodedToken;
+        const email = firebaseEmail || providedEmail;
+
+        // 1. Try to find user by firebaseUid
+        let user = await prisma.user.findUnique({
+            where: { firebaseUid: uid },
+            include: { farmerProfile: true, buyerProfile: true, transporterProfile: true }
+        });
+
+        // 2. If not found by firebaseUid, try by email
+        if (!user && email) {
+            user = await prisma.user.findUnique({
+                where: { email },
+                include: { farmerProfile: true, buyerProfile: true, transporterProfile: true }
+            });
+
+            // Link firebaseUid to existing user
+            if (user) {
+                user = await prisma.user.update({
+                    where: { id: user.id },
+                    data: { firebaseUid: uid },
+                    include: { farmerProfile: true, buyerProfile: true, transporterProfile: true }
+                });
+            }
+        }
+
+        // 3. If still not found, create new user (Signup case)
+        if (!user) {
+            user = await prisma.$transaction(async (tx) => {
+                const newUser = await tx.user.create({
+                    data: {
+                        email: email || null,
+                        firebaseUid: uid,
+                        role,
+                        status: 'ACTIVE',
+                        profilePhoto: photo || null
+                    }
+                });
+
+                // Create empty profile based on role
+                const profileData = { userId: newUser.id, fullName: name || email || 'User', phone: phone_number || '' };
+
+                if (role === 'FARMER') {
+                    await tx.farmerProfile.create({ data: { ...profileData, landSize: 0, village: '', district: '', state: '', gender: '' } });
+                } else if (role === 'BUYER') {
+                    await tx.buyerProfile.create({ data: { ...profileData, gender: '', city: '', state: '' } });
+                } else if (role === 'TRANSPORTER') {
+                    await tx.transporterProfile.create({ data: { ...profileData, gender: '', vehicleType: '', vehicleNumber: '', capacity: 0, pricePerKm: 0 } });
+                }
+
+                return await tx.user.findUnique({
+                    where: { id: newUser.id },
+                    include: { farmerProfile: true, buyerProfile: true, transporterProfile: true }
+                });
+            });
+        }
+
+        // Ensure roles match if user existed
+        if (user.role !== role) {
+            return res.status(403).json({ message: `Access denied. This account is registered as ${user.role}.` });
+        }
+
+        const profile = user.farmerProfile || user.buyerProfile || user.transporterProfile || null;
+        const token = generateToken(user);
+
+        res.status(200).json({
+            message: 'Firebase login successful',
+            token,
+            user: mapProfile(user, profile),
+        });
+    } catch (error) {
+        console.error('Firebase Login error:', error);
+        res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+};
+
+const otplessLogin = async (req, res) => {
+    const { token, role } = req.body;
+
+    if (!token || !role) {
+        return res.status(400).json({ message: 'Token and role are required' });
+    }
+
+    try {
+        // In production, verify the token with OTPless API: https://otpless.com/v3/verify
+        // For now, we simulate the verify & extract logic.
+        // OTPless tokens contain user info on successful client-side validation.
+
+        // This is a placeholder. You should add OTPLESS_CLIENT_ID and OTPLESS_CLIENT_SECRET to .env
+        // const response = await axios.post('https://otpless.com/v3/verify', { token, client_id, client_secret });
+        // const { phoneNumber, email, name } = response.data;
+
+        // Mocking user profile for local preview
+        const mockPhone = "919876543210"; // In reality, get this from verification
+
+        let user = await prisma.user.findFirst({
+            where: {
+                OR: [
+                    { phoneNumber: mockPhone },
+                    { email: `${mockPhone}@whatsapp.com` }
+                ]
+            }
+        });
+
+        if (!user) {
+            user = await prisma.user.create({
+                data: {
+                    phoneNumber: mockPhone,
+                    email: `${mockPhone}@whatsapp.com`,
+                    role: role,
+                    isVerified: true
+                }
+            });
+        }
+
+        const sessionToken = jwt.sign(
+            { id: user.id, email: user.email, role: user.role },
+            process.env.JWT_SECRET,
+            { expiresIn: '7d' }
+        );
+
+        res.json({
+            message: 'WhatsApp login successful',
+            token: sessionToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                role: user.role,
+                name: user.name || 'WhatsApp User'
+            }
+        });
+    } catch (error) {
+        console.error('OTPless login error:', error);
+        res.status(500).json({ message: 'WhatsApp authentication failed', error: error.message });
+    }
+};
+
+// Admin Login Controller (dedicated secure endpoint)
+const adminLogin = async (req, res) => {
+    const { email, password, adminSecret } = req.body;
+
+    if (!email || !password || !adminSecret) {
+        return res.status(400).json({ message: 'Email, password, and admin secret key are required' });
+    }
+
+    // Validate the admin secret key against the environment variable
+    if (adminSecret !== process.env.ADMIN_SECRET) {
+        return res.status(403).json({ message: 'Invalid admin credentials' });
+    }
+
+    try {
+        const user = await prisma.user.findUnique({
+            where: { email },
+        });
+
+        if (!user) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        if (user.role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Access denied. This account does not have admin privileges.' });
+        }
+
+        if (!user.password) {
+            return res.status(400).json({ message: 'This admin account uses social login. Please use the standard login page.' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        const token = generateToken(user);
+
+        res.status(200).json({
+            message: 'Admin login successful',
+            token,
+            user: mapProfile(user, null),
+        });
+    } catch (error) {
+        console.error('Admin login error:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+module.exports = { signup, login, getMe, updateProfile, firebaseLogin, otplessLogin, adminLogin };
