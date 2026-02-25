@@ -90,13 +90,17 @@ const RecenterMap = ({ position, zoom = 15 }) => {
   return null;
 };
 
-// Custom Marker Icon
+import iconUrl from 'leaflet/dist/images/marker-icon.png';
+import iconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png';
+import shadowUrl from 'leaflet/dist/images/marker-shadow.png';
+
 const markerIcon = new L.Icon({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon.png',
+  iconUrl: iconUrl,
+  iconRetinaUrl: iconRetinaUrl,
+  shadowUrl: shadowUrl,
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   popupAnchor: [1, -34],
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.3/dist/images/marker-shadow.png',
   shadowSize: [41, 41]
 });
 

@@ -445,11 +445,15 @@ export const locationAPI = {
     },
 
     geocode: (query: string, limit: number = 1) => {
-        return fetchWithAuth(`${API_URL}/location/geocode?q=${encodeURIComponent(query)}&limit=${limit}`);
+        return fetch(`${API_URL}/location/geocode?q=${encodeURIComponent(query)}&limit=${limit}`, {
+            headers: { 'Content-Type': 'application/json' }
+        }).then(res => res.json());
     },
 
     reverseGeocode: (lat: number, lon: number) => {
-        return fetchWithAuth(`${API_URL}/location/reverse-geocode?lat=${lat}&lon=${lon}`);
+        return fetch(`${API_URL}/location/reverse-geocode?lat=${lat}&lon=${lon}`, {
+            headers: { 'Content-Type': 'application/json' }
+        }).then(res => res.json());
     }
 };
 

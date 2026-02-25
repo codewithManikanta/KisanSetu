@@ -114,15 +114,41 @@ const signup = async (req, res) => {
             let profile = null;
             if (role === 'FARMER') {
                 profile = await prisma.farmerProfile.create({
-                    data: { userId: user.id, ...profileData },
+                    data: {
+                        userId: user.id,
+                        fullName: profileData.fullName || 'Farmer',
+                        phone: profileData.phone || '',
+                        gender: profileData.gender || 'Not Specified',
+                        landSize: parseFloat(profileData.landSize) || 0,
+                        village: profileData.village || '',
+                        district: profileData.district || '',
+                        state: profileData.state || ''
+                    },
                 });
             } else if (role === 'BUYER') {
                 profile = await prisma.buyerProfile.create({
-                    data: { userId: user.id, ...profileData },
+                    data: {
+                        userId: user.id,
+                        fullName: profileData.fullName || 'Buyer',
+                        phone: profileData.phone || '',
+                        gender: profileData.gender || 'Not Specified',
+                        city: profileData.city || '',
+                        state: profileData.state || ''
+                    },
                 });
             } else if (role === 'TRANSPORTER') {
                 profile = await prisma.transporterProfile.create({
-                    data: { userId: user.id, ...profileData, approvalStatus: 'PENDING' },
+                    data: {
+                        userId: user.id,
+                        approvalStatus: 'PENDING',
+                        fullName: profileData.fullName || 'Transporter',
+                        phone: profileData.phone || '',
+                        gender: profileData.gender || 'Not Specified',
+                        vehicleType: profileData.vehicleType || 'MINI_TRUCK',
+                        vehicleNumber: profileData.vehicleNumber || 'PENDING',
+                        capacity: parseFloat(profileData.capacity) || 0,
+                        pricePerKm: parseFloat(profileData.pricePerKm) || 0
+                    },
                 });
             }
 
